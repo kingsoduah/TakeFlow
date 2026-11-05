@@ -16,5 +16,8 @@ export default defineConfig({
     // E2E runs hit the live Neon database; allow headroom for network latency.
     testTimeout: 30000,
     hookTimeout: 60000,
+    // One file at a time: four apps starting at once against a database that
+    // has just woken up made the first requests fail with 500 (5 Nov 2026).
+    fileParallelism: false,
   },
 });
