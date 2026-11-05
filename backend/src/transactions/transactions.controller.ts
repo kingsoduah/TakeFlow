@@ -17,6 +17,7 @@ import {
   TransactionListDto,
 } from './dto/transaction.dto.js';
 import { ListTransactionsQueryDto } from './dto/list-transactions.query.js';
+import { SummaryQueryDto } from './dto/summary.query.js';
 import { TransactionsService } from './transactions.service.js';
 
 @ApiTags('transactions')
@@ -63,12 +64,14 @@ export class TransactionsController {
   @Get('summary')
   @ApiOkResponse({
     type: BusinessSummaryDto,
-    description: 'Receivables totals, status counts and unmatched deposits',
+    description:
+      'Totals in the display currency (saved per user, or ?currency=), totals per price currency, status counts and unmatched deposits',
   })
   summary(
     @CurrentUser('userId') ownerId: string,
     @Param('businessId', ParseUUIDPipe) businessId: string,
+    @Query() query: SummaryQueryDto,
   ) {
-    return this.transactionsService.businessSummary(ownerId, businessId);
+    return this.transactionsService.businessSummary(ownerId, businessId, query);
   }
 }

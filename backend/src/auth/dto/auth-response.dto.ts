@@ -17,6 +17,16 @@ export class UserDto {
   updatedAt!: Date;
 }
 
+export class MeDto extends UserDto {
+  @ApiProperty({
+    example: 'NGN',
+    enum: ['NGN', 'USD', 'GBP', 'EUR', 'GHS'],
+    description:
+      'Personal dashboard currency: the saved choice, else the currency of the first invoice, else USD',
+  })
+  displayCurrency!: string;
+}
+
 export class AuthResponseDto {
   @ApiProperty({ type: UserDto })
   user!: UserDto;

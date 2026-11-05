@@ -7,7 +7,7 @@ import { WalletsService } from './wallets.service.js';
 
 describe('WalletsService', () => {
   const prismaMock = {
-    invoice: { findFirst: vi.fn(), update: vi.fn() },
+    invoice: { findFirst: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn() },
     wallet: { create: vi.fn() },
   };
   const businessesMock = { assertOwnership: vi.fn() };
@@ -16,6 +16,7 @@ describe('WalletsService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.invoice.updateMany.mockResolvedValue({ count: 1 });
     service = new WalletsService(
       prismaMock as unknown as PrismaService,
       businessesMock as unknown as BusinessesService,
@@ -58,9 +59,53 @@ describe('WalletsService', () => {
     expect(prismaMock.wallet.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ address: '0xnew', invoiceId: 'inv-1' }),
     });
-    expect(prismaMock.invoice.update).toHaveBeenCalledWith({
-      where: { id: 'inv-1' },
+    // Assigned only if no address was set meanwhile (race-safe).
+    expect(prismaMock.invoice.updateMany).toHaveBeenCalledWith({
+      where: { id: 'inv-1', paymentAddress: null },
       data: { paymentAddress: '0xnew' },
+    });
+  });
+
+  it('returns the address another request assigned first', async () => {
+    prismaMock.invoice.findFirst.mockResolvedValue(invoiceRow());
+    roqquMock.generateWallet.mockResolvedValue({
+      status: 'success',
+      message: 'ok',
+      data: { address: '0xlate' },
+    });
+    prismaMock.invoice.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.invoice.findUnique.mockResolvedValue({ paymentAddress: '0xfirst' });
+    const result = await service.getOrCreateAddress('owner-1', 'biz-1', 'inv-1');
+    expect(result).toEqual({ address: '0xfirst', network: 'erc20', reused: true });
+  });
+
+  it('shares one Roqqu call between concurrent requests', async () => {
+    prismaMock.invoice.findUnique.mockResolvedValue(invoiceRow());
+    roqquMock.generateWallet.mockResolvedValue({
+      status: 'success',
+      message: 'ok',
+      data: { address: '0xnew' },
+    });
+    const [a, b] = await Promise.all([service.ensureAddress('inv-1'), service.ensureAddress('inv-1')]);
+    expect(a.address).toBe('0xnew');
+    expect(b.address).toBe('0xnew');
+    expect(roqquMock.generateWallet).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses checkout buyer details before the shop details', async () => {
+    prismaMock.invoice.findUnique.mockResolvedValue(
+      invoiceRow({ client: null, buyerName: 'Chidi Okafor', buyerEmail: 'chidi@buyer.example' }),
+    );
+    roqquMock.generateWallet.mockResolvedValue({
+      status: 'success',
+      message: 'ok',
+      data: { address: '0xnew' },
+    });
+    await service.ensureAddress('inv-1');
+    expect(roqquMock.generateWallet).toHaveBeenCalledWith('erc20', {
+      email: 'chidi@buyer.example',
+      first_name: 'Chidi',
+      last_name: 'Okafor',
     });
   });
 

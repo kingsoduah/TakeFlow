@@ -7,32 +7,42 @@ datasource db {
   // Connection URLs are configured in prisma7.config.ts (Prisma 7).
 }
 
-// Phase 2 models: platform users and the businesses they own.
-// Client/Invoice/Wallet/Transaction/WebhookEvent models arrive in Phase 3+.
+// Platform users and the businesses they own.
 
 model User {
-  id           String     @id @default(uuid())
-  fullName     String
-  email        String     @unique
-  passwordHash String
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  businesses   Business[]
+  id              String     @id @default(uuid())
+  fullName        String
+  email           String     @unique
+  passwordHash    String
+  // Personal dashboard currency (one of the price currencies). Null until
+  // the user picks one; reads then fall back to the currency of their first
+  // invoice, or USD.
+  displayCurrency String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  businesses      Business[]
 }
 
 model Business {
-  id            String    @id @default(uuid())
-  ownerId       String
-  owner         User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  businessName  String
-  businessEmail String?
-  businessType  String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  clients       Client[]
-  invoices      Invoice[]
-  wallets       Wallet[]
-  transactions  Transaction[]
+  id                    String        @id @default(uuid())
+  ownerId               String
+  owner                 User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  businessName          String
+  businessEmail         String?
+  businessType          String?
+  // How long a payment quote holds its crypto amount, 2 to 5 minutes.
+  quoteWindowMinutes    Int           @default(5)
+  // Shortfall that still counts as paid, in basis points of the price
+  // (50 = 0.5%). Copied onto each invoice or checkout when it is created.
+  shortfallToleranceBps Int           @default(50)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  clients               Client[]
+  invoices              Invoice[]
+  wallets               Wallet[]
+  transactions          Transaction[]
+  productLinks          ProductLink[]
+  apiKeys               ApiKey[]
 
   @@index([ownerId])
 }
@@ -50,52 +60,157 @@ model Client {
   @@index([businessId])
 }
 
-// Invoices are receivables. Monetary values use Prisma Decimal (numeric) —
-// never JavaScript floats. amountOutstanding is stored (amount -
-// amountReceived) and recalculated on every balance-affecting change.
-// amountReceived changes ONLY through reconciliation (Phase 6+); manual
-// payment statuses (PAID/PARTIALLY_PAID) are rejected until then.
+// Invoices are receivables. Monetary values use Prisma Decimal (numeric),
+// never JavaScript floats. amount is the price in `currency` (a fiat price
+// currency). amountReceived is the sum of the stored values of matched
+// payments in that currency, and amountOutstanding / amountOverpaid are
+// recalculated from it on every balance-affecting change. amountReceived
+// changes only through reconciliation.
+//
+// Shop checkouts live in this table too (kind = CHECKOUT) so reconciliation,
+// transactions and the payment page stay one code path.
 model Invoice {
-  id                String        @id @default(uuid())
-  businessId        String
-  business          Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  clientId          String?
-  client            Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  invoiceNumber     String
-  description       String?
-  amount            Decimal       @db.Decimal(30, 18)
-  currency          String // Billing (fiat) currency, ISO 4217, e.g. USD
-  cryptoAsset       String // Preferred crypto asset, e.g. USDT
-  network           String // Blockchain network code, e.g. erc20
-  issueDate         DateTime      @default(now())
-  dueDate           DateTime
-  paymentAddress    String? // Receiving address; assigned in Phase 4 (Roqqu)
-  paymentReference  String        @unique // Public payment-page reference
-  status            InvoiceStatus @default(DRAFT)
-  amountReceived    Decimal       @default(0) @db.Decimal(30, 18)
-  amountOutstanding Decimal       @db.Decimal(30, 18)
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  transactions      Transaction[]
+  id                    String        @id @default(uuid())
+  businessId            String
+  business              Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  kind                  InvoiceKind   @default(INVOICE)
+  clientId              String?
+  client                Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  invoiceNumber         String
+  description           String?
+  amount                Decimal       @db.Decimal(30, 18)
+  currency              String // Price currency: NGN, USD, GBP, EUR or GHS
+  cryptoAsset           String // Payment coin, e.g. USDT
+  network               String // Roqqu network code, e.g. trc20
+  issueDate             DateTime      @default(now())
+  dueDate               DateTime
+  paymentAddress        String? // Receiving address from Roqqu
+  paymentReference      String        @unique // Public payment-page reference
+  status                InvoiceStatus @default(DRAFT)
+  amountReceived        Decimal       @default(0) @db.Decimal(30, 18)
+  amountOutstanding     Decimal       @db.Decimal(30, 18)
+  amountOverpaid        Decimal       @default(0) @db.Decimal(30, 18)
+  shortfallToleranceBps Int           @default(50)
+  // Checkout fields. Null on plain invoices.
+  externalOrderId       String? // The shop's own order id, unique per business
+  buyerName             String?
+  buyerEmail            String?
+  returnUrl             String?
+  expiresAt             DateTime? // When an unpaid checkout stops taking new quotes
+  productLinkId         String?
+  productLink           ProductLink?  @relation(fields: [productLinkId], references: [id], onDelete: SetNull)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  transactions          Transaction[]
+  quotes                Quote[]
 
   @@unique([businessId, invoiceNumber])
+  @@unique([businessId, externalOrderId])
   @@index([businessId])
   @@index([businessId, status])
+  @@index([businessId, kind])
+  @@index([productLinkId])
+}
+
+enum InvoiceKind {
+  INVOICE
+  CHECKOUT
+}
+
+// A reusable shop link with a fixed price. Each buyer who taps Pay starts
+// their own checkout (an Invoice row with kind CHECKOUT).
+model ProductLink {
+  id          String    @id @default(uuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  reference   String    @unique // Public reference: link_ plus 32 hex characters
+  title       String
+  description String?
+  amount      Decimal   @db.Decimal(30, 18)
+  currency    String
+  cryptoAsset String
+  network     String
+  returnUrl   String?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  checkouts   Invoice[]
+
+  @@index([businessId])
+}
+
+// One fetch of the Roqqu /rates and /prices feeds. Values are decimal strings
+// so no precision is lost: fiatRates holds units of each currency per 1 USD
+// (active currencies only), coinPrices holds the USD price of each accepted
+// coin.
+model RateSnapshot {
+  id           String        @id @default(uuid())
+  source       String        @default("roqqu")
+  fetchedAt    DateTime      @default(now())
+  fiatRates    Json
+  coinPrices   Json
+  quotes       Quote[]
+  transactions Transaction[]
+
+  @@index([fetchedAt])
+}
+
+// The crypto amount shown to a payer, held for the business's quote window.
+// A quote is active from createdAt until expiresAt, or until endedAt when a
+// newer quote replaced it early. sequence is unique per invoice so two quotes
+// can never be created for the same slot at once.
+model Quote {
+  id             String        @id @default(uuid())
+  invoiceId      String
+  invoice        Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  sequence       Int
+  rateSnapshotId String
+  rateSnapshot   RateSnapshot  @relation(fields: [rateSnapshotId], references: [id])
+  priceCurrency  String
+  amountDue      Decimal       @db.Decimal(30, 18) // Still owed in the price currency when quoted
+  cryptoAsset    String
+  network        String
+  cryptoAmount   Decimal       @db.Decimal(30, 18) // Rounded up to the coin's display precision
+  rate           Decimal       @db.Decimal(30, 18) // Price currency per 1 coin
+  createdAt      DateTime
+  expiresAt      DateTime
+  endedAt        DateTime?
+  transactions   Transaction[]
+
+  @@unique([invoiceId, sequence])
+  @@index([invoiceId, createdAt])
+}
+
+// Website API keys. Only a sha256 hash of the key is stored; the full key is
+// shown once at creation. prefix is the non-secret start of the key, used to
+// find it and to show it in lists.
+model ApiKey {
+  id         String    @id @default(uuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  prefix     String    @unique
+  keyHash    String
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([businessId])
 }
 
 // Receiving addresses obtained from Roqqu. Inventory plus audit trail: an
 // address may be generated before it is assigned, and matching primarily
 // uses invoice.paymentAddress. Addresses are globally unique.
 model Wallet {
-  id            String    @id @default(uuid())
+  id            String   @id @default(uuid())
   businessId    String
-  business      Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   invoiceId     String? // Invoice this address was generated for, if any
-  address       String    @unique
+  address       String   @unique
   network       String
   customerEmail String?
-  provider      String    @default("roqqu")
-  createdAt     DateTime  @default(now())
+  provider      String   @default("roqqu")
+  createdAt     DateTime @default(now())
 
   @@index([businessId])
   @@index([invoiceId])
@@ -130,6 +245,8 @@ enum WebhookProcessingStatus {
 // Verified incoming payments. transactionHash is globally unique: the same
 // on-chain payment is never credited twice, even across redeliveries.
 // businessId is null only for deposits to addresses TakeFlow does not own.
+// excessAmount is the overpayment this payment caused, in the invoice's
+// price currency (zero when under one minor unit).
 model Transaction {
   id                   String               @id @default(uuid())
   businessId           String?
@@ -147,12 +264,32 @@ model Transaction {
   providerStatus       Int? // Raw Roqqu numeric status: recorded, never interpreted
   reconciliationStatus ReconciliationStatus @default(PENDING)
   occurredAt           DateTime?
+  // Valuation, written once when the payment is first matched. The value is
+  // in the invoice's price currency. A matched payment with null valuation
+  // had no rate available yet; it is valued on a later delivery.
+  depositedAt          DateTime? // Deposit time used for the quote window
+  valueCurrency        String?
+  valueAmount          Decimal?             @db.Decimal(30, 18)
+  valuationRate        Decimal?             @db.Decimal(30, 18) // Price currency per 1 coin
+  valuationMethod      ValuationMethod?
+  valuedAt             DateTime?
+  rateSnapshotId       String?
+  rateSnapshot         RateSnapshot?        @relation(fields: [rateSnapshotId], references: [id])
+  quoteId              String?
+  quote                Quote?               @relation(fields: [quoteId], references: [id], onDelete: SetNull)
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
 
   @@index([businessId])
   @@index([invoiceId])
   @@index([receivingAddress])
+}
+
+// QUOTE: paid inside an active quote window, valued at the quoted rate.
+// ARRIVAL: no quote applied, valued at the latest rate when processed.
+enum ValuationMethod {
+  QUOTE
+  ARRIVAL
 }
 
 enum ReconciliationStatus {
@@ -174,5 +311,4 @@ enum InvoiceStatus {
   EXPIRED
 }
 
-// NOTE (Phase 4): User, Business, Client, Invoice, Wallet, WebhookEvent and
-// Transaction are live. No further models are planned for the hackathon MVP.
+// Fiat pricing and checkout added ProductLink, RateSnapshot, Quote and ApiKey.

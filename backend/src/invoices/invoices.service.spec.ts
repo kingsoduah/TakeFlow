@@ -17,11 +17,13 @@ function uniqueViolation(target: string[]) {
   });
 }
 
+// USDT on erc20 is no longer an accepted pair (design doc 4), so the
+// fixture uses trc20.
 const baseDto = {
   amount: '1500.00',
   currency: 'USD',
   cryptoAsset: 'USDT',
-  network: 'erc20',
+  network: 'trc20',
   dueDate: '2026-12-31T00:00:00.000Z',
 };
 
@@ -65,6 +67,52 @@ describe('InvoicesService', () => {
     );
     expect(result.invoiceNumber).toMatch(/^INV-/);
     expect(result.paymentReference).toMatch(/^pay_/);
+  });
+
+  it('copies the business shortfall tolerance and marks the row as an invoice', async () => {
+    businessesMock.assertOwnership.mockResolvedValueOnce({ id: 'biz-1', shortfallToleranceBps: 0 });
+    prismaMock.invoice.create.mockImplementation(async ({ data }: any) => ({ id: 'inv-1', ...data }));
+    const result = await service.create('owner-1', 'biz-1', { ...baseDto, currency: 'GBP' });
+    expect(result.shortfallToleranceBps).toBe(0);
+    expect(result.kind).toBe('INVOICE');
+    expect(result.currency).toBe('GBP');
+  });
+
+  it('rejects unsupported price currencies and coin/network pairs (400)', async () => {
+    for (const bad of [
+      { currency: 'KES' },
+      { network: 'erc20' },
+      { cryptoAsset: 'USDC', network: 'trc20' },
+      { cryptoAsset: 'BTC', network: 'bitcoin' },
+    ]) {
+      const error = await service.create('owner-1', 'biz-1', { ...baseDto, ...bad }).catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestException);
+    }
+    expect(prismaMock.invoice.create).not.toHaveBeenCalled();
+  });
+
+  it('lists only invoices, not shop checkouts', async () => {
+    prismaMock.invoice.findMany.mockResolvedValue([]);
+    prismaMock.invoice.count.mockResolvedValue(0);
+    await service.findAll('owner-1', 'biz-1', {});
+    expect(prismaMock.invoice.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { businessId: 'biz-1', kind: 'INVOICE' } }),
+    );
+  });
+
+  it('keeps balances right when the amount of a part-paid invoice changes', async () => {
+    prismaMock.invoice.findFirst.mockResolvedValue({
+      id: 'inv-1',
+      status: InvoiceStatus.PARTIALLY_PAID,
+      currency: 'GBP',
+      shortfallToleranceBps: 50,
+      amountReceived: new Prisma.Decimal('450'),
+    });
+    prismaMock.invoice.update.mockImplementation(async ({ data }: any) => data);
+    const lowered = await service.update('owner-1', 'biz-1', 'inv-1', { amount: '400' });
+    expect(lowered.amountOutstanding.toFixed()).toBe('0');
+    expect(lowered.amountOverpaid.toFixed()).toBe('50');
+    expect(lowered.status).toBe(InvoiceStatus.PAID);
   });
 
   it('rejects an invoice referencing another business client (404)', async () => {

@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { RoqquError, RoqquService } from './roqqu.service.js';
+import { ROQQU_USER_AGENT, RoqquError, RoqquService } from './roqqu.service.js';
 
 function makeService(env: 'staging' | 'live') {
   const store: Record<string, string | undefined> = {
@@ -38,6 +38,32 @@ describe('RoqquService', () => {
     );
     expect(init.body as string).toContain('email=a%40b.c');
     expect(init.body as string).toContain('token=usdt');
+  });
+
+  it('names the client, asks for JSON and sends the key on the market feeds', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'success', message: 'ok', data: [] }));
+    await makeService('staging').getFiatRates();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(url).toBe('https://service.roqqu.com/v1/rates');
+    expect(headers['User-Agent']).toBe(ROQQU_USER_AGENT);
+    expect(headers['Accept']).toBe('application/json');
+    expect(headers['x-staging-api-key']).toBe('staging-key-123');
+  });
+
+  it('still fetches the market feeds keyless when no key is configured', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'success', message: 'ok', data: {} }));
+    const config = {
+      get: (key: string) => (key === 'ROQQU_ENV' ? 'staging' : undefined),
+    } as unknown as ConfigService;
+    await new RoqquService(config).getCryptoPrices();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(url).toBe('https://service.roqqu.com/v1/prices');
+    expect(headers['x-staging-api-key']).toBeUndefined();
+    expect(headers['x-api-key']).toBeUndefined();
   });
 
   it('sends JSON body for generate-wallet with network and customer', async () => {

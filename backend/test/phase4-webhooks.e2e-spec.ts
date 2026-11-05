@@ -22,6 +22,7 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const suiteStartedAt = new Date();
   const userA = { fullName: 'P4 User A', email: `p4.a.${suffix}@example.com`, password: 'password-A1' };
   const userB = { fullName: 'P4 User B', email: `p4.b.${suffix}@example.com`, password: 'password-B1' };
   const tokenA = { value: '' };
@@ -51,6 +52,22 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
     },
     getBalances: async () => ({ status: 'success', message: 'ok', data: { usdt: 137 } }),
     getWebhooks: async () => ({ status: 'success', message: 'ok', data: {} }),
+    // Payments are now valued through the rate feeds. A USD price of exactly
+    // 1 keeps the USD invoice figures below unchanged.
+    getFiatRates: async () => ({
+      status: 'success',
+      message: 'all rates retrieved successfully',
+      data: [
+        { symbol: 'ngn', rate: 1375, status: 1 },
+        { symbol: 'usd', rate: 1, status: 1 },
+        { symbol: 'gbp', rate: 0.75, status: 1 },
+      ],
+    }),
+    getCryptoPrices: async () => ({
+      status: 'success',
+      message: 'success',
+      data: { usdt: { price: '1.000000000000000', change: 0 }, usdc: { price: '1', change: 0 } },
+    }),
   };
 
   function sendDeposit(eventId: string, meta: Record<string, unknown>, iv = randomWebhookIvHex()) {
@@ -98,6 +115,11 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
     await prisma.webhookEvent.deleteMany({});
     await prisma.business.deleteMany({ where: { id: { in: [ids.bizA, ids.bizB] } } });
     await prisma.user.deleteMany({ where: { email: { in: [userA.email, userB.email] } } });
+    // Stubbed rates must not linger as a fallback snapshot for a real server
+    // on the same database. Best effort: skipped if anything references them.
+    await prisma.rateSnapshot
+      .deleteMany({ where: { fetchedAt: { gte: suiteStartedAt } } })
+      .catch(() => undefined);
     await app.close();
   });
 
@@ -108,7 +130,7 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
     amount: '1500.00',
     currency: 'USD',
     cryptoAsset: 'USDT',
-    network: 'erc20',
+    network: 'trc20',
     dueDate: '2026-12-31T00:00:00.000Z',
     ...overrides,
   });
@@ -118,7 +140,7 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
       await server().post(`/api/v1/businesses/${ids.bizA}/invoices`).set(asA()).send(invoicePayload({ clientId: ids.clientA })).expect(201)
     ).body.id;
     const first = await server().post(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invFull}/address`).set(asA()).expect(201);
-    expect(first.body.address).toBe(`0xaddr-erc20-${suffix}-1`);
+    expect(first.body.address).toBe(`0xaddr-trc20-${suffix}-1`);
     expect(first.body.reused).toBe(false);
     addrs.full = first.body.address;
     const second = await server().post(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invFull}/address`).set(asA()).expect(201);
@@ -137,8 +159,8 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
 
   it('credits an exact payment to PAID on first delivery', async () => {
     const txHash = `0xfull-${suffix}`;
-    deposits.set(txHash, { ref: '4829', status: 1, email: 'm@b.c', value: 1500, network: 'erc20', token: 'usdt', address: addrs.full, sender: '0xsender', tx_hash: txHash });
-    const { body, iv } = sendDeposit(`evt-full-${suffix}`, { address: addrs.full, network: 'erc20', token: 'USDT', value: '1500.00', hash: txHash, status: 1 });
+    deposits.set(txHash, { ref: '4829', status: 1, email: 'm@b.c', value: 1500, network: 'trc20', token: 'usdt', address: addrs.full, sender: '0xsender', tx_hash: txHash });
+    const { body, iv } = sendDeposit(`evt-full-${suffix}`, { address: addrs.full, network: 'trc20', token: 'USDT', value: '1500.00', hash: txHash, status: 1 });
     const res = await server().post('/api/v1/webhooks/roqqu').set('x-api-key', iv).send(body).expect(200);
     expect(res.body.result).toBe('processed');
 
@@ -153,7 +175,7 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
 
   it('does not double-credit a redelivered webhook', async () => {
     const txHash = `0xfull-${suffix}`;
-    const { body, iv } = sendDeposit(`evt-full-${suffix}`, { address: addrs.full, network: 'erc20', token: 'USDT', value: '1500.00', hash: txHash, status: 1 });
+    const { body, iv } = sendDeposit(`evt-full-${suffix}`, { address: addrs.full, network: 'trc20', token: 'USDT', value: '1500.00', hash: txHash, status: 1 });
     const res = await server().post('/api/v1/webhooks/roqqu').set('x-api-key', iv).send(body).expect(200);
     expect(res.body.result).toBe('duplicate');
     const inv = await server().get(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invFull}`).set(asA()).expect(200);
@@ -168,8 +190,8 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
       await server().post(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invPart}/address`).set(asA()).expect(201)
     ).body.address;
     const txHash = `0xpart-${suffix}`;
-    deposits.set(txHash, { ref: '4830', status: 1, email: 'm@b.c', value: 500, network: 'erc20', token: 'usdt', address: addrs.part, sender: '0xsender', tx_hash: txHash });
-    const { body, iv } = sendDeposit(`evt-part-${suffix}`, { address: addrs.part, network: 'erc20', token: 'USDT', value: '500.00', hash: txHash, status: 1 });
+    deposits.set(txHash, { ref: '4830', status: 1, email: 'm@b.c', value: 500, network: 'trc20', token: 'usdt', address: addrs.part, sender: '0xsender', tx_hash: txHash });
+    const { body, iv } = sendDeposit(`evt-part-${suffix}`, { address: addrs.part, network: 'trc20', token: 'USDT', value: '500.00', hash: txHash, status: 1 });
     await server().post('/api/v1/webhooks/roqqu').set('x-api-key', iv).send(body).expect(200);
     const inv = await server().get(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invPart}`).set(asA()).expect(200);
     expect(inv.body.status).toBe('PARTIALLY_PAID');
@@ -185,8 +207,8 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
       await server().post(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invOver}/address`).set(asA()).expect(201)
     ).body.address;
     const txHash = `0xover-${suffix}`;
-    deposits.set(txHash, { ref: '4831', status: 1, email: 'm@b.c', value: 1200, network: 'erc20', token: 'usdt', address: addrs.over, sender: '0xsender', tx_hash: txHash });
-    const { body, iv } = sendDeposit(`evt-over-${suffix}`, { address: addrs.over, network: 'erc20', token: 'USDT', value: '1200.00', hash: txHash, status: 1 });
+    deposits.set(txHash, { ref: '4831', status: 1, email: 'm@b.c', value: 1200, network: 'trc20', token: 'usdt', address: addrs.over, sender: '0xsender', tx_hash: txHash });
+    const { body, iv } = sendDeposit(`evt-over-${suffix}`, { address: addrs.over, network: 'trc20', token: 'USDT', value: '1200.00', hash: txHash, status: 1 });
     await server().post('/api/v1/webhooks/roqqu').set('x-api-key', iv).send(body).expect(200);
     const payments = await server().get(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invOver}/payments`).set(asA()).expect(200);
     expect(Number(payments.body.totalReceived)).toBe(1200);
@@ -206,8 +228,8 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
     ).body.address;
     await server().delete(`/api/v1/businesses/${ids.bizA}/invoices/${ids.invTmp}`).set(asA()).expect(204);
     const txHash = `0xunknown-${suffix}`;
-    deposits.set(txHash, { ref: '4832', status: 1, email: 'm@b.c', value: 10, network: 'erc20', token: 'usdt', address: addrs.tmp, sender: '0xsender', tx_hash: txHash });
-    const { body, iv } = sendDeposit(`evt-unknown-${suffix}`, { address: addrs.tmp, network: 'erc20', token: 'USDT', value: '10', hash: txHash, status: 1 });
+    deposits.set(txHash, { ref: '4832', status: 1, email: 'm@b.c', value: 10, network: 'trc20', token: 'usdt', address: addrs.tmp, sender: '0xsender', tx_hash: txHash });
+    const { body, iv } = sendDeposit(`evt-unknown-${suffix}`, { address: addrs.tmp, network: 'trc20', token: 'USDT', value: '10', hash: txHash, status: 1 });
     await server().post('/api/v1/webhooks/roqqu').set('x-api-key', iv).send(body).expect(200);
     const list = await server().get(`/api/v1/businesses/${ids.bizA}/transactions?status=UNMATCHED`).set(asA()).expect(200);
     expect(list.body.data.map((t: any) => t.transactionHash)).toContain(txHash);
@@ -217,7 +239,7 @@ describe('Phase 4 webhooks + reconciliation (e2e)', () => {
     const iv = randomWebhookIvHex();
     const body = {
       hash: encryptWebhookBody({
-        plaintext: JSON.stringify({ event_id: `evt-sent-${suffix}`, event_type: 'token_sent', meta_data: { address: `0xaddr-erc20-${suffix}`, network: 'erc20', token: 'USDT', value: '1', hash: `0xsent-${suffix}` }, datetime: '2026-11-04T12:00:00Z' }),
+        plaintext: JSON.stringify({ event_id: `evt-sent-${suffix}`, event_type: 'token_sent', meta_data: { address: `0xaddr-trc20-${suffix}`, network: 'trc20', token: 'USDT', value: '1', hash: `0xsent-${suffix}` }, datetime: '2026-11-04T12:00:00Z' }),
         ivHex: iv,
         apiKey: WEBHOOK_KEY,
       }),

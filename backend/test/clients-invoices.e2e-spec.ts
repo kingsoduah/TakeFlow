@@ -73,7 +73,7 @@ describe('Clients + Invoices (e2e)', () => {
     amount: '1500.00',
     currency: 'USD',
     cryptoAsset: 'USDT',
-    network: 'erc20',
+    network: 'trc20',
     dueDate: '2026-12-31T00:00:00.000Z',
     ...overrides,
   });
