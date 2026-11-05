@@ -645,6 +645,12 @@ export const mockApi: TakeFlowApi = {
     return publicPayment(db, findByReference(db, reference), display);
   },
 
+  // Sample data has its own controls (mockTools); this keeps the API shape.
+  async simulatePayment(reference, portion, display) {
+    mockTools.simulatePayment(reference, portion);
+    return mockApi.getPayment(reference, display);
+  },
+
   // POST /pay/:ref/quote: reuses the running quote while it still matches
   // what is owed, otherwise makes a new one. Makes the address on first use.
   async requestQuote(reference, display) {

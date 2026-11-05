@@ -333,6 +333,8 @@ export interface PublicPayment {
   quote: PublicQuote | null;
   payments: PublicPaymentRecord[];
   display: PublicDisplay | null;
+  /** True when the API runs in demo mode: simulated addresses and payments. */
+  demoPayments?: boolean;
   serverTime: string;
 }
 

@@ -154,7 +154,7 @@ export function InvoiceDetailView() {
                   </thead>
                   <tbody>
                     {data.transactions.map((t) => {
-                      const ex = explorerFor(t.network);
+                      const ex = explorerFor(t.network, t.transactionHash);
                       return (
                         <tr key={t.id}>
                           <td className="m-a">

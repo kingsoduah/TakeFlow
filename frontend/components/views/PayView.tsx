@@ -329,6 +329,28 @@ export function PaymentView({ reference }: { reference: string }) {
     open && q ? 1000 : null,
   );
 
+  // Demo mode (the API says demoPayments): simulated payments go through the
+  // real matching code on the server, so the page and dashboard update for
+  // real. Only offered when the API is in demo mode.
+  const [simulating, setSimulating] = useState(false);
+  const simulate = useCallback(
+    (portion: "full" | "part") => {
+      setSimulating(true);
+      api
+        .simulatePayment(reference, portion, chosenRef.current)
+        .then(
+          (p) => {
+            setState(withSkew(p));
+            setError(null);
+            setQuoteError(null);
+          },
+          (e: unknown) => setQuoteError({ status: e instanceof ApiError ? e.status : 0, message: publicError(e) }),
+        )
+        .finally(() => setSimulating(false));
+    },
+    [reference],
+  );
+
   const onCurrency = (c: Currency) => {
     setChosen(c);
     chosenRef.current = c;
@@ -441,6 +463,18 @@ export function PaymentView({ reference }: { reference: string }) {
           </button>
         </div>
       ) : null}
+
+      {!USE_MOCKS && open && page.demoPayments ? (
+        <div className="mock-tools" role="group" aria-label="Demo payment controls">
+          <b>Demo mode.</b> Payments are simulated until a working Roqqu key is set:
+          <button type="button" className="btn btn-secondary btn-sm" disabled={simulating} onClick={() => simulate("part")}>
+            Simulate a part payment
+          </button>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={simulating} onClick={() => simulate("full")}>
+            Simulate the full payment
+          </button>
+        </div>
+      ) : null}
     </PayShell>
   );
 }
@@ -520,7 +554,7 @@ function PaymentsList({ page }: { page: PublicPayment }) {
       <p className="eyebrow">Payments received</p>
       <ul className="mt-2 flex flex-col gap-2">
         {page.payments.map((p) => {
-          const ex = explorerFor(p.network);
+          const ex = explorerFor(p.network, p.transactionHash);
           return (
             <li key={p.transactionHash} className="flex items-center justify-between gap-3 rounded-[8px] border border-line px-3 py-2 text-[13px]">
               <span className="num">
@@ -719,7 +753,7 @@ function Receipt({ page }: { page: PublicPayment }) {
           <dt>{page.payments.length > 1 ? "Transactions" : "Transaction"}</dt>
           <dd className="flex flex-col gap-1">
             {page.payments.map((p) => {
-              const ex = explorerFor(p.network);
+              const ex = explorerFor(p.network, p.transactionHash);
               return ex ? (
                 <a key={p.transactionHash} className="hash" style={{ margin: 0, padding: 0 }} href={ex.tx(p.transactionHash)} target="_blank" rel="noopener noreferrer" aria-label={`View transaction ${shortHash(p.transactionHash)} on ${ex.name} (opens in a new tab)`}>
                   {shortHash(p.transactionHash, 6)} on {ex.name}
