@@ -158,6 +158,10 @@ export class WebhooksService {
       providerReference: verified.ref,
       providerStatus: verified.status,
       occurredAt,
+      // Deposit time for the quote window: Roqqu's deposit record
+      // created_at, else the webhook datetime. The time the webhook reached
+      // us is never used, because deliveries can be late.
+      depositedAt: verified.createdAt ?? occurredAt,
     });
 
     await this.mark(eventId, WebhookProcessingStatus.PROCESSED);
@@ -175,7 +179,7 @@ export class WebhooksService {
     token: string;
     value: Prisma.Decimal;
   }): Promise<
-    | { ok: true; ref: string; status: number }
+    | { ok: true; ref: string; status: number; createdAt?: Date }
     | { ok: false; fatal: boolean; reason: string }
   > {
     let deposit;
@@ -212,7 +216,7 @@ export class WebhooksService {
       }
       throw error;
     }
-    return { ok: true, ref: d.ref, status: d.status };
+    return { ok: true, ref: d.ref, status: d.status, createdAt: this.parseDate(d.created_at) };
   }
 
   private extractHash(rawBody: unknown): string {

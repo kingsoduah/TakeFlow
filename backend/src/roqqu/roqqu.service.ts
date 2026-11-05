@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 // Error for every Roqqu-side failure: transport, non-2xx, or a documented
@@ -36,9 +36,32 @@ export interface DepositRecord {
   sender: string;
   extra: string | null;
   tx_hash: string;
+  created_at?: string; // ISO time Roqqu recorded the deposit (per Roqqu docs)
 }
 
+// GET /rates entry. rate is units of that currency per 1 USD; status 1 = on.
+export interface FiatRateEntry {
+  symbol: string;
+  title?: string;
+  rate: number | string;
+  status: number | string;
+  [extra: string]: unknown;
+}
+
+// GET /prices data, keyed by lowercase token symbol. price is a decimal
+// string in USD.
+export type CryptoPriceMap = Record<
+  string,
+  { price: string | number; change?: number | string } | undefined
+>;
+
 const REQUEST_TIMEOUT_MS = 15000;
+// Market feeds back a payment page, so they fail fast.
+const MARKET_TIMEOUT_MS = 8000;
+// Roqqu sits behind Cloudflare, which refused requests from the hosted
+// server that carried Node's default user agent ("node"). Every request
+// names the client and asks for JSON.
+export const ROQQU_USER_AGENT = 'TakeFlow-Backend/1.0 (+https://github.com/kingsoduah/TakeFlow)';
 
 // Sole boundary to Roqqu API Services. Header and body formats follow
 // ROQQU_API_REFERENCE.md per endpoint:
@@ -49,6 +72,7 @@ const REQUEST_TIMEOUT_MS = 15000;
 //   balances, get-addresses, requery and retrigger.
 @Injectable()
 export class RoqquService {
+  private readonly logger = new Logger(RoqquService.name);
   private readonly baseUrl: string;
   private readonly env: RoqquEnv;
   private readonly stagingKey?: string;
@@ -85,7 +109,39 @@ export class RoqquService {
     },
   ): Promise<RoqquResponse<T>> {
     const { name, key } = this.authHeader();
-    const headers: Record<string, string> = { [name]: key };
+    return this.send<T>(path, opts, { [name]: key }, REQUEST_TIMEOUT_MS);
+  }
+
+  // Public market data path. GET /rates and GET /prices answer without a
+  // key, but on 5 Nov 2026 Roqqu's Cloudflare showed a bot check ("Just a
+  // moment...") to keyless requests from the hosted server. When a key is
+  // configured it is sent here too; with no key the request goes keyless.
+  private async publicGet<T>(path: string): Promise<RoqquResponse<T>> {
+    let auth: Record<string, string> = {};
+    try {
+      const { name, key } = this.authHeader();
+      auth = { [name]: key };
+    } catch {
+      // No key configured: keyless request.
+    }
+    return this.send<T>(path, { method: 'GET' }, auth, MARKET_TIMEOUT_MS);
+  }
+
+  private async send<T>(
+    path: string,
+    opts: {
+      method: 'GET' | 'POST';
+      form?: Record<string, string | undefined>;
+      json?: unknown;
+    },
+    authHeaders: Record<string, string>,
+    timeoutMs: number,
+  ): Promise<RoqquResponse<T>> {
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'User-Agent': ROQQU_USER_AGENT,
+      ...authHeaders,
+    };
     let body: string | undefined;
     if (opts.json !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -105,7 +161,7 @@ export class RoqquService {
         method: opts.method,
         headers,
         body,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       throw new RoqquError(
@@ -113,10 +169,19 @@ export class RoqquService {
       );
     }
 
+    // A copy of the body, read only when it is not JSON, so the log shows
+    // whether a block page (for example Cloudflare's) came back instead.
+    const copy = typeof res.clone === 'function' ? res.clone() : null;
     let payload: any = null;
     try {
       payload = await res.json();
     } catch {
+      const snippet = copy
+        ? (await copy.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 200)
+        : '';
+      this.logger.warn(
+        `Roqqu ${opts.method} ${path} returned non-JSON (HTTP ${res.status}): ${snippet}`,
+      );
       throw new RoqquError(`Roqqu returned a non-JSON response (HTTP ${res.status})`);
     }
     if (!res.ok || payload?.status === 'fail') {
@@ -126,6 +191,16 @@ export class RoqquService {
       );
     }
     return payload as RoqquResponse<T>;
+  }
+
+  // GET /rates (no auth). Fiat currencies with units per 1 USD.
+  async getFiatRates() {
+    return this.publicGet<FiatRateEntry[]>('/rates');
+  }
+
+  // GET /prices (no auth). USD price of each token, keyed by symbol.
+  async getCryptoPrices() {
+    return this.publicGet<CryptoPriceMap>('/prices');
   }
 
   // POST /balances (form). Both params optional per docs.

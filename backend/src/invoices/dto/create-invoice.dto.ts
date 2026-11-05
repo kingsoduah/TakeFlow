@@ -11,6 +11,8 @@ import {
   MaxLength,
 } from 'class-validator';
 import { IsDecimalAmount } from '../../common/validators/is-decimal-amount.js';
+import { ACCEPTED_PAIRS_TEXT, PRICE_CURRENCIES } from '../../pricing/catalog.js';
+import { IsAcceptedPaymentPair, IsPriceCurrency } from '../../pricing/validators.js';
 
 export class CreateInvoiceDto {
   @ApiPropertyOptional({
@@ -47,14 +49,18 @@ export class CreateInvoiceDto {
   @IsDecimalAmount(18)
   amount!: string | number;
 
-  @ApiProperty({ example: 'USD', pattern: '^[A-Z]{3}$' })
-  @Matches(/^[A-Z]{3}$/)
+  @ApiProperty({
+    example: 'GBP',
+    enum: PRICE_CURRENCIES,
+    description: 'Price currency. Payers still pay in crypto, converted at a quoted rate.',
+  })
+  @IsPriceCurrency()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toUpperCase() : value,
   )
   currency!: string;
 
-  @ApiProperty({ example: 'USDT', pattern: '^[A-Z0-9]{2,20}$' })
+  @ApiProperty({ example: 'USDT', enum: ['USDT', 'USDC'] })
   @Matches(/^[A-Z0-9]{2,20}$/)
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toUpperCase() : value,
@@ -62,11 +68,12 @@ export class CreateInvoiceDto {
   cryptoAsset!: string;
 
   @ApiProperty({
-    example: 'erc20',
-    pattern: '^[a-z0-9]{2,20}$',
-    description: 'Roqqu network code used for wallet generation and matching',
+    example: 'trc20',
+    enum: ['trc20', 'bep20', 'base'],
+    description: `Roqqu network code. Accepted pairs: ${ACCEPTED_PAIRS_TEXT}`,
   })
   @Matches(/^[a-z0-9]{2,20}$/)
+  @IsAcceptedPaymentPair()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toLowerCase() : value,
   )

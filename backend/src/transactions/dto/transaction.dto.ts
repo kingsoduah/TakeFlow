@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { InvoiceStatus, ReconciliationStatus } from '@prisma/client';
+import { InvoiceStatus, ReconciliationStatus, ValuationMethod } from '@prisma/client';
 
 export class TransactionInvoiceRefDto {
   @ApiProperty({ format: 'uuid' })
@@ -37,12 +37,13 @@ export class TransactionDto {
   @ApiProperty({ example: 'erc20' })
   network!: string;
 
-  @ApiProperty({ example: '500', description: 'Verified deposit amount' })
+  @ApiProperty({ example: '500', description: 'Verified deposit amount, in crypto' })
   amount!: string;
 
   @ApiProperty({
     example: '0',
-    description: 'Amount above the invoice total, tracked separately',
+    description:
+      'Overpayment this payment added, in the price currency (zero under one minor unit)',
   })
   excessAmount!: string;
 
@@ -65,6 +66,38 @@ export class TransactionDto {
     description: 'On-chain/event time when supplied by Roqqu',
   })
   occurredAt?: Date | null;
+
+  @ApiPropertyOptional({
+    example: '2026-11-05T15:01:10.000Z',
+    nullable: true,
+    description: 'Deposit time used for the quote window (Roqqu created_at, else webhook datetime)',
+  })
+  depositedAt?: Date | null;
+
+  @ApiPropertyOptional({ example: 'GBP', nullable: true, description: 'Price currency of the value' })
+  valueCurrency?: string | null;
+
+  @ApiPropertyOptional({
+    example: '450',
+    nullable: true,
+    description: 'Value in the price currency, set once at first match; null while waiting for a rate',
+  })
+  valueAmount?: string | null;
+
+  @ApiPropertyOptional({ example: '0.75', nullable: true, description: 'Price currency per 1 coin' })
+  valuationRate?: string | null;
+
+  @ApiPropertyOptional({ enum: ValuationMethod, nullable: true })
+  valuationMethod?: ValuationMethod | null;
+
+  @ApiPropertyOptional({ example: '2026-11-05T15:01:30.000Z', nullable: true })
+  valuedAt?: Date | null;
+
+  @ApiPropertyOptional({ format: 'uuid', nullable: true, description: 'Rate snapshot used' })
+  rateSnapshotId?: string | null;
+
+  @ApiPropertyOptional({ format: 'uuid', nullable: true, description: 'Quote that applied, if any' })
+  quoteId?: string | null;
 
   @ApiProperty({ example: '2026-11-04T12:00:05.000Z' })
   createdAt!: Date;
@@ -123,8 +156,14 @@ export class InvoicePaymentsDto {
   paymentCount!: number;
 }
 
-export class BusinessSummaryDto {
-  @ApiProperty({ example: '4500' })
+export class CurrencyTotalsDto {
+  @ApiProperty({ example: 'GBP' })
+  currency!: string;
+
+  @ApiProperty({ example: 3 })
+  invoiceCount!: number;
+
+  @ApiProperty({ example: '4500', description: 'In this currency, not converted' })
   totalInvoiced!: string;
 
   @ApiProperty({ example: '1500' })
@@ -132,6 +171,47 @@ export class BusinessSummaryDto {
 
   @ApiProperty({ example: '3000' })
   totalOutstanding!: string;
+
+  @ApiProperty({ example: '0' })
+  totalOverpaid!: string;
+}
+
+export class BusinessSummaryDto {
+  @ApiProperty({
+    example: 'NGN',
+    description: 'Currency of the three totals below: ?currency=, else the saved display currency',
+  })
+  displayCurrency!: string;
+
+  @ApiPropertyOptional({
+    example: '8250000.00',
+    nullable: true,
+    description: 'Converted at the latest rate. Null when a needed rate is unavailable.',
+  })
+  totalInvoiced!: string | null;
+
+  @ApiPropertyOptional({
+    example: '2062500.00',
+    nullable: true,
+    description: 'Each payment converted at the snapshot it was valued with',
+  })
+  totalReceived!: string | null;
+
+  @ApiPropertyOptional({ example: '6187500.00', nullable: true })
+  totalOutstanding!: string | null;
+
+  @ApiPropertyOptional({
+    example: '2026-11-05T14:28:00.000Z',
+    nullable: true,
+    description: 'Time of the latest rate used; null when nothing needed converting',
+  })
+  ratesAsOf!: Date | null;
+
+  @ApiProperty({
+    type: [CurrencyTotalsDto],
+    description: 'Totals per price currency. Drafts and expired links are left out.',
+  })
+  byCurrency!: CurrencyTotalsDto[];
 
   @ApiProperty({
     description: 'Invoice counts keyed by every InvoiceStatus value',
@@ -153,6 +233,12 @@ export class BusinessSummaryDto {
     description: 'Deposits that could not be matched to an invoice',
   })
   unmatchedTransactionCount!: number;
+
+  @ApiProperty({
+    example: 0,
+    description: 'Matched payments still waiting for a rate to be valued',
+  })
+  unvaluedPaymentCount!: number;
 
   @ApiProperty({ type: [TransactionDto] })
   recentTransactions!: TransactionDto[];

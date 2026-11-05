@@ -6,9 +6,11 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { compare, hash } from 'bcryptjs';
+import { resolveDisplayCurrency } from '../pricing/display-currency.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { UpdateMeDto } from './dto/update-me.dto.js';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -73,15 +75,31 @@ export class AuthService {
     return { user: safeUser, accessToken: this.signToken(user.id, user.email) };
   }
 
-  async me(userId: string): Promise<SafeUser> {
+  // The signed in user plus their display currency (the saved choice, or
+  // the default described in resolveDisplayCurrency).
+  async me(userId: string): Promise<SafeUser & { displayCurrency: string }> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: safeUserSelect,
+      select: { ...safeUserSelect, displayCurrency: true },
     });
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    return user;
+    const { displayCurrency: saved, ...safe } = user;
+    return {
+      ...safe,
+      displayCurrency: await resolveDisplayCurrency(this.prisma, userId, saved),
+    };
+  }
+
+  async updateMe(userId: string, dto: UpdateMeDto) {
+    if (dto.displayCurrency !== undefined) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { displayCurrency: dto.displayCurrency },
+      });
+    }
+    return this.me(userId);
   }
 
   private signToken(userId: string, email: string): string {

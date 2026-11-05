@@ -1,14 +1,19 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller.js';
+import { ApiKeysModule } from './api-keys/api-keys.module.js';
 import { AppService } from './app.service.js';
 import { AuthModule } from './auth/auth.module.js';
 import { BusinessesModule } from './businesses/businesses.module.js';
+import { CheckoutsModule } from './checkouts/checkouts.module.js';
 import { ClientsModule } from './clients/clients.module.js';
 import { DocsModule } from './docs/docs.module.js';
 import { validateEnv } from './config/env.validation.js';
 import { HealthModule } from './health/health.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
+import { PaymentsModule } from './payments/payments.module.js';
+import { QuotesModule } from './quotes/quotes.module.js';
+import { RatesModule } from './rates/rates.module.js';
 import { ReconciliationModule } from './reconciliation/reconciliation.module.js';
 import { RoqquModule } from './roqqu/roqqu.module.js';
 import { TransactionsModule } from './transactions/transactions.module.js';
@@ -36,6 +41,11 @@ import { PrismaModule } from './prisma/prisma.module.js';
     TransactionsModule,
     ReconciliationModule,
     RoqquModule,
+    RatesModule,
+    QuotesModule,
+    CheckoutsModule,
+    PaymentsModule,
+    ApiKeysModule,
     WebhooksModule,
     DocsModule,
   ],

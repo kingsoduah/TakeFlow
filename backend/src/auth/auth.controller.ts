@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -9,9 +9,10 @@ import {
 import { ApiCommonErrors } from '../common/dto/api-common-errors.decorator.js';
 import { AuthService } from './auth.service.js';
 import { CurrentUser } from './current-user.decorator.js';
-import { AuthResponseDto, UserDto } from './dto/auth-response.dto.js';
+import { AuthResponseDto, MeDto } from './dto/auth-response.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { UpdateMeDto } from './dto/update-me.dto.js';
 import type { RequestUser } from './jwt.strategy.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
@@ -38,8 +39,16 @@ export class AuthController {
   @Get('me')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOkResponse({ type: UserDto })
+  @ApiOkResponse({ type: MeDto })
   me(@CurrentUser() user: RequestUser) {
     return this.authService.me(user.userId);
+  }
+
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOkResponse({ type: MeDto, description: 'Saved; returns the updated user' })
+  updateMe(@CurrentUser() user: RequestUser, @Body() dto: UpdateMeDto) {
+    return this.authService.updateMe(user.userId, dto);
   }
 }

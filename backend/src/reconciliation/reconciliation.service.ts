@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
-import { InvoiceStatus, Prisma, ReconciliationStatus } from '@prisma/client';
+import { Injectable, Logger } from '@nestjs/common';
+import { Prisma, ReconciliationStatus, Transaction } from '@prisma/client';
+import { computeBalances, excessForPayment } from '../pricing/balances.js';
+import { addMoney } from '../pricing/money.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { PaymentValuation, QuotesService } from '../quotes/quotes.service.js';
 
 export interface VerifiedDeposit {
   transactionHash: string;
@@ -12,6 +15,9 @@ export interface VerifiedDeposit {
   providerReference?: string;
   providerStatus?: number;
   occurredAt?: Date;
+  // Deposit time for the quote window: Roqqu's deposit record created_at,
+  // or the webhook datetime when that is missing.
+  depositedAt?: Date;
 }
 
 export interface ReconcileResult {
@@ -20,15 +26,36 @@ export interface ReconcileResult {
   invoiceId: string | null;
 }
 
-// Matches a VERIFIED deposit to an invoice and updates balances. All money
-// uses Prisma.Decimal. Reconciliation is idempotent: invoice balances are
-// recomputed from the sum of matched transactions, so redeliveries converge
-// instead of double-crediting. No interactive DB transactions are used (the
-// Neon serverless adapter does not support them); uniqueness constraints on
-// transactionHash make concurrent inserts safe.
+const ZERO = new Prisma.Decimal(0);
+
+function valuationData(valuation: PaymentValuation | null) {
+  if (!valuation) return {};
+  return {
+    valueCurrency: valuation.valueCurrency,
+    valueAmount: valuation.valueAmount,
+    valuationRate: valuation.valuationRate,
+    valuationMethod: valuation.valuationMethod,
+    valuedAt: valuation.valuedAt,
+    rateSnapshotId: valuation.rateSnapshotId,
+    quoteId: valuation.quoteId,
+  };
+}
+
+// Matches a VERIFIED deposit to an invoice or checkout, values it once in the
+// price currency, and updates balances. All money uses Prisma.Decimal.
+// Reconciliation is idempotent: a payment's value is computed at first match
+// and stored, and balances are recomputed from the sum of stored values, so
+// redeliveries converge instead of double-crediting. No interactive DB
+// transactions are used (the Neon serverless adapter does not support them);
+// uniqueness constraints on transactionHash make concurrent inserts safe.
 @Injectable()
 export class ReconciliationService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ReconciliationService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly quotes: QuotesService,
+  ) {}
 
   async reconcileVerifiedDeposit(deposit: VerifiedDeposit): Promise<ReconcileResult> {
     const existing = await this.prisma.transaction.findUnique({
@@ -36,6 +63,11 @@ export class ReconciliationService {
     });
     if (existing) {
       if (existing.reconciliationStatus === ReconciliationStatus.MATCHED) {
+        // A payment matched while no rate was available gets its one and
+        // only valuation now. Valued payments are never valued again.
+        if (existing.valueAmount === null) {
+          await this.valuePending(existing);
+        }
         await this.recomputeInvoice(existing.invoiceId);
       }
       return {
@@ -78,17 +110,35 @@ export class ReconciliationService {
           providerStatus: deposit.providerStatus,
           reconciliationStatus: ReconciliationStatus.UNMATCHED,
           occurredAt: deposit.occurredAt,
+          depositedAt: deposit.depositedAt,
         },
       });
       return { status: 'unmatched', transactionId: unmatched.id, invoiceId: null };
     }
 
-    const matchedSum = await this.sumMatched(invoice.id);
-    const newReceived = matchedSum.plus(deposit.amount);
-    const excess = Prisma.Decimal.max(
-      new Prisma.Decimal(0),
-      newReceived.minus(invoice.amount),
-    );
+    const valuation = await this.quotes.valuePayment({
+      invoiceId: invoice.id,
+      currency: invoice.currency,
+      cryptoAsset: deposit.asset,
+      network: deposit.network,
+      amount: deposit.amount,
+      depositedAt: deposit.depositedAt,
+    });
+    if (!valuation) {
+      this.logger.warn(
+        `No fresh rate to value payment ${deposit.transactionHash}; it is stored unvalued and valued on a later delivery`,
+      );
+    }
+
+    const before = await this.sumMatched(invoice.id);
+    const excess = valuation
+      ? excessForPayment(
+          before,
+          addMoney(before, valuation.valueAmount),
+          invoice.amount,
+          invoice.currency,
+        )
+      : ZERO;
 
     const transaction = await this.prisma.transaction.create({
       data: {
@@ -105,6 +155,8 @@ export class ReconciliationService {
         providerStatus: deposit.providerStatus,
         reconciliationStatus: ReconciliationStatus.MATCHED,
         occurredAt: deposit.occurredAt,
+        depositedAt: deposit.depositedAt,
+        ...valuationData(valuation),
       },
     });
 
@@ -112,16 +164,50 @@ export class ReconciliationService {
     return { status: 'matched', transactionId: transaction.id, invoiceId: invoice.id };
   }
 
+  // First valuation of a matched payment that had no rate at match time.
+  // The conditional update makes sure only one valuation is ever written.
+  private async valuePending(transaction: Transaction): Promise<void> {
+    if (!transaction.invoiceId) return;
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: transaction.invoiceId },
+    });
+    if (!invoice) return;
+    const valuation = await this.quotes.valuePayment({
+      invoiceId: invoice.id,
+      currency: invoice.currency,
+      cryptoAsset: transaction.asset,
+      network: transaction.network,
+      amount: transaction.amount,
+      depositedAt: transaction.depositedAt,
+    });
+    if (!valuation) return;
+    const before = await this.sumMatched(invoice.id);
+    await this.prisma.transaction.updateMany({
+      where: { id: transaction.id, valueAmount: null },
+      data: {
+        ...valuationData(valuation),
+        excessAmount: excessForPayment(
+          before,
+          addMoney(before, valuation.valueAmount),
+          invoice.amount,
+          invoice.currency,
+        ),
+      },
+    });
+  }
+
+  // Sum of stored values (price currency) over matched payments. Unvalued
+  // payments add nothing until they are valued.
   private async sumMatched(invoiceId: string): Promise<Prisma.Decimal> {
     const result = await this.prisma.transaction.aggregate({
       where: { invoiceId, reconciliationStatus: ReconciliationStatus.MATCHED },
-      _sum: { amount: true },
+      _sum: { valueAmount: true },
     });
-    return result._sum.amount ?? new Prisma.Decimal(0);
+    return result._sum.valueAmount ?? ZERO;
   }
 
-  // Recomputes an invoice from its matched transactions. Safe to run any
-  // number of times with the same result.
+  // Recomputes an invoice from its matched payments' stored values. Safe to
+  // run any number of times with the same result.
   async recomputeInvoice(invoiceId: string | null): Promise<void> {
     if (!invoiceId) return;
     const invoice = await this.prisma.invoice.findUnique({
@@ -129,20 +215,21 @@ export class ReconciliationService {
     });
     if (!invoice) return;
     const received = await this.sumMatched(invoiceId);
-    const outstanding = Prisma.Decimal.max(
-      new Prisma.Decimal(0),
-      invoice.amount.minus(received),
-    );
-    const status =
-      received.greaterThanOrEqualTo(invoice.amount) &&
-      received.greaterThan(0)
-        ? InvoiceStatus.PAID
-        : received.greaterThan(0)
-          ? InvoiceStatus.PARTIALLY_PAID
-          : invoice.status;
+    const balances = computeBalances({
+      amount: invoice.amount,
+      received,
+      currency: invoice.currency,
+      shortfallToleranceBps: invoice.shortfallToleranceBps,
+      currentStatus: invoice.status,
+    });
     await this.prisma.invoice.update({
       where: { id: invoiceId },
-      data: { amountReceived: received, amountOutstanding: outstanding, status },
+      data: {
+        amountReceived: balances.amountReceived,
+        amountOutstanding: balances.amountOutstanding,
+        amountOverpaid: balances.amountOverpaid,
+        status: balances.status,
+      },
     });
   }
 }

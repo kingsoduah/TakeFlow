@@ -28,6 +28,14 @@ export function validateEnv(config: Record<string, unknown>) {
     throw new Error("ROQQU_ENV must be 'staging' or 'live'");
   }
 
+  const frontendOrigins = parseOrigins(config.FRONTEND_ORIGINS);
+
+  const rawHops = config.TRUST_PROXY_HOPS ?? 0;
+  const trustProxyHops = typeof rawHops === 'number' ? rawHops : Number(rawHops);
+  if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 10) {
+    throw new Error('TRUST_PROXY_HOPS must be a whole number from 0 to 10');
+  }
+
   return {
     PORT: port,
     // Canonical Neon names: pooled runtime URL + direct CLI/migration URL.
@@ -50,5 +58,41 @@ export function validateEnv(config: Record<string, unknown>) {
     // production. Never the same concern as request authentication.
     ROQQU_WEBHOOK_API_KEY:
       (config.ROQQU_WEBHOOK_API_KEY as string | undefined) || undefined,
+    // Browser origins allowed by CORS, e.g. the frontend's URL. Empty means
+    // CORS stays off and only same-origin browser calls work.
+    FRONTEND_ORIGINS: frontendOrigins,
+    // Number of reverse proxies in front of the app (1 on Render). Lets the
+    // public rate limiter see the real client address. Keep 0 when the app
+    // is reached directly, or clients could fake their address.
+    TRUST_PROXY_HOPS: trustProxyHops,
   };
+}
+
+// Comma separated list of origins such as
+// "https://takeflow.app,http://localhost:3001". Each entry must be a bare
+// origin: scheme, host and optional port, no path.
+function parseOrigins(raw: unknown): string[] {
+  if (raw === undefined || raw === null || raw === '') return [];
+  if (typeof raw !== 'string') {
+    throw new Error('FRONTEND_ORIGINS must be a comma separated list of origins');
+  }
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      let url: URL;
+      try {
+        url = new URL(entry);
+      } catch {
+        throw new Error(`FRONTEND_ORIGINS entry "${entry}" is not a valid origin`);
+      }
+      const bare = entry.replace(/\/+$/, '');
+      if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.origin !== bare) {
+        throw new Error(
+          `FRONTEND_ORIGINS entry "${entry}" must look like https://example.com with no path`,
+        );
+      }
+      return url.origin;
+    });
 }

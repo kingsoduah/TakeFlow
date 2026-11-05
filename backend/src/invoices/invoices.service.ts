@@ -4,9 +4,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InvoiceStatus, Prisma } from '@prisma/client';
+import { InvoiceKind, InvoiceStatus, Prisma } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import { BusinessesService } from '../businesses/businesses.service.js';
+import { assertPriceable } from '../pricing/assert-priceable.js';
+import { computeBalances } from '../pricing/balances.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateInvoiceDto } from './dto/create-invoice.dto.js';
 import { ListInvoicesQueryDto } from './dto/list-invoices.query.js';
@@ -123,9 +125,10 @@ export class InvoicesService {
   }
 
   async create(ownerId: string, businessId: string, dto: CreateInvoiceDto) {
-    await this.businessesService.assertOwnership(ownerId, businessId);
+    const business = await this.businessesService.assertOwnership(ownerId, businessId);
     const clientId = await this.resolveClient(businessId, dto.clientId);
     this.assertCreatableStatus(dto.status);
+    assertPriceable(dto.currency, dto.cryptoAsset, dto.network);
 
     const amount = new Prisma.Decimal(String(dto.amount));
     if (dto.invoiceNumber) {
@@ -133,6 +136,10 @@ export class InvoicesService {
     }
     const base = {
       businessId,
+      kind: InvoiceKind.INVOICE,
+      // The business's tolerance at creation applies for the invoice's whole
+      // life, so a later settings change never flips an old invoice's status.
+      shortfallToleranceBps: business?.shortfallToleranceBps ?? 50,
       clientId,
       description: dto.description,
       amount,
@@ -176,7 +183,8 @@ export class InvoicesService {
   ) {
     await this.businessesService.assertOwnership(ownerId, businessId);
     const { status, limit = 50, offset = 0 } = query;
-    const where = { businessId, ...(status ? { status } : {}) };
+    // Shop checkouts share this table; they are listed under /checkouts.
+    const where = { businessId, kind: InvoiceKind.INVOICE, ...(status ? { status } : {}) };
     const [data, total] = await Promise.all([
       this.prisma.invoice.findMany({
         where,
@@ -193,7 +201,7 @@ export class InvoicesService {
   async findOne(ownerId: string, businessId: string, id: string) {
     await this.businessesService.assertOwnership(ownerId, businessId);
     const invoice = await this.prisma.invoice.findFirst({
-      where: { id, businessId },
+      where: { id, businessId, kind: InvoiceKind.INVOICE },
       include: {
         client: { select: clientSelect },
         business: { select: { businessName: true } },
@@ -223,10 +231,22 @@ export class InvoicesService {
       await assertInvoiceNumberFree(this.prisma, businessId, dto.invoiceNumber, id);
     }
 
-    // amountOutstanding always mirrors amount - amountReceived using Decimal
-    // arithmetic. amountReceived only changes via reconciliation (Phase 6+).
+    // Balances are recomputed with the same rules reconciliation uses
+    // (tolerance, overpayment, never below zero). amountReceived only changes
+    // via reconciliation.
     const amount =
       dto.amount !== undefined ? new Prisma.Decimal(String(dto.amount)) : null;
+    const balances =
+      amount !== null
+        ? computeBalances({
+            amount,
+            received: existing.amountReceived,
+            currency: existing.currency,
+            shortfallToleranceBps: existing.shortfallToleranceBps,
+            currentStatus: dto.status ?? existing.status,
+          })
+        : null;
+    const receivedSome = existing.amountReceived?.greaterThan(0) ?? false;
     const data: Prisma.InvoiceUpdateInput = {
       ...(dto.description !== undefined ? { description: dto.description } : {}),
       ...(dto.dueDate !== undefined ? { dueDate: new Date(dto.dueDate) } : {}),
@@ -235,10 +255,13 @@ export class InvoicesService {
         : {}),
       ...(dto.status !== undefined ? { status: dto.status } : {}),
       ...(clientId !== undefined ? { client: clientId ? { connect: { id: clientId } } : { disconnect: true } } : {}),
-      ...(amount !== null
+      ...(amount !== null && balances !== null
         ? {
             amount,
-            amountOutstanding: amount.minus(existing.amountReceived),
+            amountOutstanding: balances.amountOutstanding,
+            amountOverpaid: balances.amountOverpaid,
+            // With payments on record the status follows the balance.
+            ...(receivedSome ? { status: balances.status } : {}),
           }
         : {}),
     };

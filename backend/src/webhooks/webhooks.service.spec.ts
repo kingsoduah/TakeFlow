@@ -132,6 +132,67 @@ describe('WebhooksService', () => {
     );
   });
 
+  it('uses the deposit record created_at as the deposit time, else the webhook datetime', async () => {
+    const deposit = {
+      ref: '4829',
+      status: 1,
+      email: 'm@b.c',
+      value: 1500,
+      network: 'erc20',
+      token: 'usdt',
+      address: '0xrecv',
+      sender: '0xsend',
+      tx_hash: '0xhash1',
+    };
+    roqquMock.requeryTransaction.mockResolvedValue({
+      status: 'success',
+      message: 'Transaction confirmed in Block.',
+      data: null,
+    });
+    reconMock.reconcileVerifiedDeposit.mockResolvedValue({ status: 'matched' });
+
+    prismaMock.webhookEvent.create.mockResolvedValue({ eventId: 'evt-t1' });
+    roqquMock.getDeposit.mockResolvedValue({
+      status: 'success',
+      message: 'transaction retrieved',
+      data: { ...deposit, created_at: '2026-11-05T15:01:10.000Z' },
+    });
+    await service.processIncoming(
+      encryptedBody({
+        event_id: 'evt-t1',
+        event_type: 'token_received',
+        meta_data: baseMeta,
+        datetime: '2026-11-05T15:09:00Z',
+      }),
+      IV,
+    );
+    expect(reconMock.reconcileVerifiedDeposit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        depositedAt: new Date('2026-11-05T15:01:10.000Z'),
+        occurredAt: new Date('2026-11-05T15:09:00Z'),
+      }),
+    );
+
+    prismaMock.webhookEvent.create.mockResolvedValue({ eventId: 'evt-t2' });
+    roqquMock.getDeposit.mockResolvedValue({
+      status: 'success',
+      message: 'transaction retrieved',
+      data: deposit,
+    });
+    await service.processIncoming(
+      encryptedBody({
+        event_id: 'evt-t2',
+        event_type: 'token_received',
+        meta_data: baseMeta,
+        datetime: '2026-11-05T15:09:00Z',
+      }),
+      IV,
+    );
+    expect(reconMock.reconcileVerifiedDeposit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ depositedAt: new Date('2026-11-05T15:09:00Z') }),
+    );
+  });
+
   it('treats redelivery of a finished event as duplicate without reprocessing', async () => {
     prismaMock.webhookEvent.findUnique.mockResolvedValue({
       eventId: 'evt-3',
