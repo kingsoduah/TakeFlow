@@ -85,7 +85,7 @@ If Roqqu's feeds are unavailable, TakeFlow uses the last good rates for up to 30
 | Backend (`backend/`) | NestJS 12, TypeScript, Prisma 7 with the Neon serverless adapter, PostgreSQL on Neon, class-validator, OpenAPI document, Vitest |
 | Frontend (`frontend/`) | Next.js 16 (App Router), React 19, Tailwind CSS 4, qrcode.react |
 | Payments | Roqqu API Services: wallets, deposit lookup, requery, rates, prices, webhooks |
-| Hosting | Vercel (one project for the API, one for the app), Neon Postgres through the Vercel Marketplace |
+| Hosting | Vercel (one project for the API, one for the app), Neon Postgres through the Vercel Marketplace, a Cloudflare Worker relay for Roqqu calls |
 
 ---
 
@@ -112,6 +112,7 @@ TakeFlow/
 │   │   ├── api-keys/            API keys for shop websites
 │   │   └── roqqu/               the only HTTP boundary to Roqqu
 │   └── test/                    end-to-end tests
+├── roqqu-relay/                 Cloudflare Worker that relays Roqqu calls from Africa
 ├── frontend/                    Next.js app
 │   ├── app/                     pages: landing, auth, dashboard, invoices, checkout links, transactions, settings, pay
 │   ├── components/              UI, landing page and payment page views
@@ -167,6 +168,7 @@ With `NEXT_PUBLIC_USE_MOCKS=true` every screen runs on built-in sample data and 
 | `ROQQU_STAGING_API_KEY` | For Test mode | Roqqu Test mode API key |
 | `ROQQU_API_KEY` | For Live mode | Roqqu Live mode API key |
 | `ROQQU_WEBHOOK_API_KEY` | For webhooks | Key used to decrypt Roqqu webhooks (first 32 characters). Use the key of the mode you run |
+| `ROQQU_RELAY_SECRET` | With the relay | Shared secret for the `roqqu-relay` Worker. Set it together with `ROQQU_BASE_URL` pointing at the Worker's `/v1` |
 | `FRONTEND_ORIGINS` | For the app | Comma-separated browser origins allowed by CORS, for example `https://takeflow-sandy.vercel.app,http://localhost:3100` |
 | `TRUST_PROXY_HOPS` | No | Proxies in front of the API: `1` on Vercel, `0` locally. Lets the public rate limiter see the real client address |
 | `PORT` | No | Default `3000` |
@@ -280,14 +282,16 @@ Steps for a new environment:
 
 1. Create the Neon database and apply migrations: `npx prisma migrate deploy` (uses `DATABASE_URL_UNPOOLED`).
 2. Set the backend variables listed above, including `FRONTEND_ORIGINS` with the app's address and `TRUST_PROXY_HOPS=1`.
-3. Deploy the backend, then the frontend.
+3. Deploy the backend, then the frontend. If Roqqu's Cloudflare challenges the server, deploy [`roqqu-relay`](roqqu-relay/README.md) and point `ROQQU_BASE_URL` and `ROQQU_RELAY_SECRET` at it.
 4. In the Roqqu RAS console (settings page, API Keys and Webhooks), set the webhook URL to `https://<api-domain>/api/v1/webhooks/roqqu` and turn on coin deposit events.
 
 ---
 
 ## Status and known issues
 
-- **Roqqu's bot check blocks the hosted API (open).** On 5 Nov 2026, Roqqu's Cloudflare answered requests from the Vercel server with a "Just a moment..." browser check (HTTP 403) instead of data. Until this is resolved, live quotes return 503 "price unavailable". The API now sends a named User-Agent and the API key on every Roqqu call, including the rates feeds. Whether calls carrying the key get through is the next test, once the staging key is set. If they don't, Roqqu needs to let server traffic reach `service.roqqu.com`.
+- **Roqqu's bot check and the relay.** On 5 Nov 2026, Roqqu's Cloudflare answered every request from the Vercel server with a "Just a moment..." browser check (HTTP 403), even calls carrying the API key. The hosted API now calls Roqqu through the [`roqqu-relay`](roqqu-relay/README.md) Worker, whose calls leave from Africa. With it, the live API gets real rates and prices. Asking Roqqu to let server traffic through is still the cleaner long-term fix.
+- **A valid Roqqu Test key is needed.** The Test key tried on 5 Nov 2026 was rejected by Roqqu ("Invalid API Key") with both the `x-staging-api-key` and `x-api-key` headers. Until a valid key is set, the payment page cannot create receiving addresses, so live quotes fail.
+- **Roqqu's service was unsteady on 5 Nov 2026.** Its feeds sometimes returned HTTP 502 or "rates data still syncing". TakeFlow falls back to the last good rates for up to 30 minutes.
 - **Questions for Roqqu** (not answered by the docs):
   1. How to send a test deposit in Test mode.
   2. Whether the Test key decrypts Test mode webhooks (the docs only mention the Live key).
