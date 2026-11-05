@@ -58,6 +58,10 @@ export function validateEnv(config: Record<string, unknown>) {
     // production. Never the same concern as request authentication.
     ROQQU_WEBHOOK_API_KEY:
       (config.ROQQU_WEBHOOK_API_KEY as string | undefined) || undefined,
+    // Shared secret for the roqqu-relay Worker. When ROQQU_BASE_URL points at
+    // the relay, every Roqqu call carries it in the x-relay-secret header.
+    ROQQU_RELAY_SECRET:
+      (config.ROQQU_RELAY_SECRET as string | undefined) || undefined,
     // Browser origins allowed by CORS, e.g. the frontend's URL. Empty means
     // CORS stays off and only same-origin browser calls work.
     FRONTEND_ORIGINS: frontendOrigins,

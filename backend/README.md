@@ -38,7 +38,7 @@ npm run build
 - Money is `Prisma.Decimal` everywhere. No JavaScript floats for amounts or rates.
 - A webhook alone never marks an invoice paid. Each deposit is checked against Roqqu's deposit record and requery first.
 - Each payment is valued once and stored. Balances are recalculated from stored values, so repeated webhooks never double count.
-- Roqqu calls carry a named User-Agent and, when configured, the API key.
+- Roqqu calls carry a named User-Agent, the API key when configured, and the relay secret when `ROQQU_BASE_URL` points at the [`roqqu-relay`](../roqqu-relay/README.md) Worker (used because Roqqu's Cloudflare challenges cloud servers).
 
 ## Deploying on Vercel
 

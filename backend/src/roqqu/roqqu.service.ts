@@ -77,6 +77,7 @@ export class RoqquService {
   private readonly env: RoqquEnv;
   private readonly stagingKey?: string;
   private readonly liveKey?: string;
+  private readonly relaySecret?: string;
 
   constructor(configService: ConfigService) {
     this.baseUrl =
@@ -84,6 +85,9 @@ export class RoqquService {
     this.env = (configService.get<string>('ROQQU_ENV') ?? 'staging') as RoqquEnv;
     this.stagingKey = configService.get<string>('ROQQU_STAGING_API_KEY');
     this.liveKey = configService.get<string>('ROQQU_API_KEY');
+    // Set when ROQQU_BASE_URL points at the roqqu-relay Worker (see
+    // roqqu-relay/), which only relays requests carrying this secret.
+    this.relaySecret = configService.get<string>('ROQQU_RELAY_SECRET');
   }
 
   private authHeader(): { name: string; key: string } {
@@ -140,6 +144,7 @@ export class RoqquService {
     const headers: Record<string, string> = {
       Accept: 'application/json',
       'User-Agent': ROQQU_USER_AGENT,
+      ...(this.relaySecret ? { 'x-relay-secret': this.relaySecret } : {}),
       ...authHeaders,
     };
     let body: string | undefined;

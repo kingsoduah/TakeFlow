@@ -52,6 +52,26 @@ describe('RoqquService', () => {
     expect(headers['x-staging-api-key']).toBe('staging-key-123');
   });
 
+  it('sends the relay secret only when one is configured', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'success', message: 'ok', data: [] }));
+    const store: Record<string, string> = {
+      ROQQU_BASE_URL: 'https://relay.example.workers.dev/v1',
+      ROQQU_ENV: 'staging',
+      ROQQU_STAGING_API_KEY: 'staging-key-123',
+      ROQQU_RELAY_SECRET: 'relay-secret-abc',
+    };
+    const relayed = new RoqquService({ get: (k: string) => store[k] } as unknown as ConfigService);
+    await relayed.getFiatRates();
+    const [relayUrl, relayInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(relayUrl).toBe('https://relay.example.workers.dev/v1/rates');
+    expect((relayInit.headers as Record<string, string>)['x-relay-secret']).toBe('relay-secret-abc');
+
+    fetchMock.mockClear();
+    await makeService('staging').getFiatRates();
+    const [, directInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((directInit.headers as Record<string, string>)['x-relay-secret']).toBeUndefined();
+  });
+
   it('still fetches the market feeds keyless when no key is configured', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 'success', message: 'ok', data: {} }));
     const config = {
