@@ -72,6 +72,23 @@ describe('RoqquService', () => {
     expect((directInit.headers as Record<string, string>)['x-relay-secret']).toBeUndefined();
   });
 
+  it('simulates addresses in demo mode without calling Roqqu', async () => {
+    const store: Record<string, unknown> = { ROQQU_ENV: 'staging', DEMO_PAYMENTS: true };
+    const demo = new RoqquService({ get: (k: string) => store[k] } as unknown as ConfigService);
+    const customer = { email: 'a@b.c', first_name: 'A', last_name: 'B' };
+
+    const tron = await demo.generateWallet('trc20', customer);
+    const bsc = await demo.generateWallet('bep20', customer);
+    const base = await demo.generateWallet('base', customer);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(demo.simulatesPayments).toBe(true);
+    expect(tron.data.address).toMatch(/^T[1-9A-HJ-NP-Za-km-z]{33}$/);
+    expect(bsc.data.address).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(base.data.address).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(makeService('staging').simulatesPayments).toBe(false);
+  });
+
   it('still fetches the market feeds keyless when no key is configured', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 'success', message: 'ok', data: {} }));
     const config = {

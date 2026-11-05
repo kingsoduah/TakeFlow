@@ -4,9 +4,13 @@ import {
   GoneException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Invoice, InvoiceKind, InvoiceStatus, Prisma, ReconciliationStatus } from '@prisma/client';
+import { randomBytes } from 'node:crypto';
+import { ReconciliationService } from '../reconciliation/reconciliation.service.js';
 import {
   expireIfStale,
   isPastExpiry,
@@ -38,6 +42,22 @@ export type PublicInvoice = Invoice & {
 
 const money = (value: Prisma.Decimal) => value.toFixed();
 
+// Demo mode: simulated deposits use this prefix so they can never be
+// mistaken for real on-chain transactions.
+export const SIMULATED_HASH_PREFIX = 'sim_';
+export type SimulatedPortion = 'full' | 'part';
+
+// The crypto a simulated deposit sends: the whole quoted amount, or half of
+// it (rounded down to the coin's precision) to show a part payment.
+export function simulatedDepositAmount(
+  quotedCryptoAmount: Prisma.Decimal,
+  portion: SimulatedPortion,
+  decimals: number,
+): Prisma.Decimal {
+  if (portion === 'full') return quotedCryptoAmount;
+  return quotedCryptoAmount.dividedBy(2).toDecimalPlaces(decimals, Prisma.Decimal.ROUND_DOWN);
+}
+
 // Public payment page data, looked up by the invoice's paymentReference.
 // No login. Every response is built from that one invoice and its own
 // business name: no internal IDs, no client or buyer contact details, and
@@ -50,7 +70,50 @@ export class PublicPaymentsService {
     private readonly rates: RatesService,
     private readonly wallets: WalletsService,
     private readonly checkouts: CheckoutsService,
+    @Optional() private readonly reconciliation?: ReconciliationService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
+
+  // Demo mode (DEMO_PAYMENTS=true): addresses are simulated and the payment
+  // page may send simulated deposits.
+  demoPaymentsEnabled(): boolean {
+    return this.config?.get<boolean>('DEMO_PAYMENTS') === true;
+  }
+
+  // Demo mode only. Sends a simulated deposit of the full quoted amount, or
+  // half of it, to the invoice's address and runs it through the same
+  // matching and valuation code as a verified Roqqu deposit. The Roqqu
+  // verification step is skipped because the deposit is simulated; the hash
+  // starts with sim_ and the provider reference says "simulated".
+  async simulatePayment(
+    reference: string,
+    portion: SimulatedPortion,
+    displayCurrency?: string,
+    now = new Date(),
+  ) {
+    if (!this.demoPaymentsEnabled() || !this.reconciliation) {
+      throw new NotFoundException('Not found');
+    }
+    const invoice = await this.load(reference, now);
+    this.assertPayable(invoice, now);
+    await this.quoteAndAddress(invoice, now);
+    const quote = await this.quotes.findActive(invoice.id, now);
+    if (!quote || !invoice.paymentAddress) {
+      throw new ServiceUnavailableException(PRICE_UNAVAILABLE_MESSAGE);
+    }
+    await this.reconciliation.reconcileVerifiedDeposit({
+      transactionHash: `${SIMULATED_HASH_PREFIX}${randomBytes(16).toString('hex')}`,
+      receivingAddress: invoice.paymentAddress,
+      asset: invoice.cryptoAsset.toUpperCase(),
+      network: invoice.network,
+      amount: simulatedDepositAmount(quote.cryptoAmount, portion, coinDecimals(invoice.cryptoAsset)),
+      providerReference: 'simulated',
+      depositedAt: now,
+      occurredAt: now,
+    });
+    const updated = await this.load(reference, now);
+    return this.buildView(updated, displayCurrency, now);
+  }
 
   options() {
     return {
@@ -285,6 +348,8 @@ export class PublicPaymentsService {
         receivedAt: payment.createdAt,
       })),
       display: displayCurrency ? await this.displayAmounts(invoice, displayCurrency, now) : null,
+      // True in demo mode: the page may offer simulated payments.
+      demoPayments: this.demoPaymentsEnabled(),
       serverTime: now,
     };
   }

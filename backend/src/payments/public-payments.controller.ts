@@ -24,6 +24,7 @@ import {
   PublicPaymentDto,
   PublicPaymentQueryDto,
   PublicProductLinkDto,
+  SimulatePaymentDto,
   StartProductCheckoutDto,
 } from './dto/public-payment.dto.js';
 import { PublicPaymentsService } from './public-payments.service.js';
@@ -137,5 +138,28 @@ export class PublicPaymentsController {
   })
   requestQuote(@Param('reference') reference: string, @Query() query: PublicPaymentQueryDto) {
     return this.payments.requestQuote(reference, query.currency);
+  }
+
+  @Post(':reference/simulate-payment')
+  @HttpCode(HttpStatus.OK)
+  @RateLimit(PUBLIC_QUOTE_LIMIT)
+  @ApiOperation({
+    summary: 'Send a simulated payment (demo mode only)',
+    description:
+      'Only when the API runs with DEMO_PAYMENTS=true; otherwise 404. Sends a simulated deposit of ' +
+      'the full quoted amount, or half of it, to the invoice address and runs it through the same ' +
+      'matching and valuation as a verified Roqqu deposit. The transaction hash starts with sim_.',
+  })
+  @ApiParam({ name: 'reference', example: 'pay_9f2c1d7a4b8e0f1a2b3c4d5e6f708192' })
+  @ApiOkResponse({ type: PublicPaymentDto })
+  @ApiResponse({ status: 404, description: 'Not in demo mode, or unknown reference', type: ApiErrorDto })
+  @ApiResponse({ status: 409, description: 'Already paid, or nothing is owed', type: ApiErrorDto })
+  @ApiResponse({ status: 503, description: 'Price unavailable', type: ApiErrorDto })
+  simulatePayment(
+    @Param('reference') reference: string,
+    @Body() dto: SimulatePaymentDto,
+    @Query() query: PublicPaymentQueryDto,
+  ) {
+    return this.payments.simulatePayment(reference, dto.portion, query.currency);
   }
 }

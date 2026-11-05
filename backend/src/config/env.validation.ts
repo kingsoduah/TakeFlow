@@ -62,6 +62,12 @@ export function validateEnv(config: Record<string, unknown>) {
     // the relay, every Roqqu call carries it in the x-relay-secret header.
     ROQQU_RELAY_SECRET:
       (config.ROQQU_RELAY_SECRET as string | undefined) || undefined,
+    // Demo mode for when no working Roqqu key is available: receiving
+    // addresses are simulated and the payment page can send simulated
+    // deposits through the real matching code. Off unless set to true.
+    DEMO_PAYMENTS: ['true', '1', 'yes'].includes(
+      String(config.DEMO_PAYMENTS ?? '').trim().toLowerCase(),
+    ),
     // Browser origins allowed by CORS, e.g. the frontend's URL. Empty means
     // CORS stays off and only same-origin browser calls work.
     FRONTEND_ORIGINS: frontendOrigins,

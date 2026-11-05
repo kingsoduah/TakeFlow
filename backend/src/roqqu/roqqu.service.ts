@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomBytes } from 'node:crypto';
 
 // Error for every Roqqu-side failure: transport, non-2xx, or a documented
 // `{ status: 'fail', message }` body. Never carries credentials.
@@ -63,6 +64,21 @@ const MARKET_TIMEOUT_MS = 8000;
 // names the client and asks for JSON.
 export const ROQQU_USER_AGENT = 'TakeFlow-Backend/1.0 (+https://github.com/kingsoduah/TakeFlow)';
 
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+// A receiving address in the right shape for the network, for demo mode
+// only: Tron addresses start with T (34 base58 characters), EVM addresses
+// are 0x plus 40 hex characters. Nothing can be sent to it on chain.
+export function simulatedAddress(network: string): string {
+  if (network === 'trc20') {
+    const bytes = randomBytes(33);
+    let out = 'T';
+    for (const byte of bytes) out += BASE58[byte % BASE58.length];
+    return out;
+  }
+  return `0x${randomBytes(20).toString('hex')}`;
+}
+
 // Sole boundary to Roqqu API Services. Header and body formats follow
 // ROQQU_API_REFERENCE.md per endpoint:
 // - Auth header is environment-selected: x-staging-api-key (staging) or
@@ -78,6 +94,8 @@ export class RoqquService {
   private readonly stagingKey?: string;
   private readonly liveKey?: string;
   private readonly relaySecret?: string;
+  // Demo mode: addresses are simulated instead of created by Roqqu.
+  readonly simulatesPayments: boolean;
 
   constructor(configService: ConfigService) {
     this.baseUrl =
@@ -88,6 +106,7 @@ export class RoqquService {
     // Set when ROQQU_BASE_URL points at the roqqu-relay Worker (see
     // roqqu-relay/), which only relays requests carrying this secret.
     this.relaySecret = configService.get<string>('ROQQU_RELAY_SECRET');
+    this.simulatesPayments = configService.get<boolean>('DEMO_PAYMENTS') === true;
   }
 
   private authHeader(): { name: string; key: string } {
@@ -219,7 +238,17 @@ export class RoqquService {
   // POST /wallets/generate-wallet (JSON). Network-level addresses: the
   // endpoint takes a network code, not an asset — one address serves
   // whatever token arrives on that network.
-  async generateWallet(network: string, customer: RoqquWalletCustomer) {
+  async generateWallet(
+    network: string,
+    customer: RoqquWalletCustomer,
+  ): Promise<RoqquResponse<{ address: string }>> {
+    if (this.simulatesPayments) {
+      return {
+        status: 'success',
+        message: 'simulated address (demo mode)',
+        data: { address: simulatedAddress(network) },
+      };
+    }
     return this.request<{ address: string }>('/wallets/generate-wallet', {
       method: 'POST',
       json: { network, customer },
