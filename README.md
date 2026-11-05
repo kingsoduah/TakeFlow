@@ -169,6 +169,7 @@ With `NEXT_PUBLIC_USE_MOCKS=true` every screen runs on built-in sample data and 
 | `ROQQU_API_KEY` | For Live mode | Roqqu Live mode API key |
 | `ROQQU_WEBHOOK_API_KEY` | For webhooks | Key used to decrypt Roqqu webhooks (first 32 characters). Use the key of the mode you run |
 | `ROQQU_RELAY_SECRET` | With the relay | Shared secret for the `roqqu-relay` Worker. Set it together with `ROQQU_BASE_URL` pointing at the Worker's `/v1` |
+| `DEMO_PAYMENTS` | No | `true` turns on demo mode: receiving addresses are simulated and the payment page can send simulated payments. Default `false`. Never use it with real money |
 | `FRONTEND_ORIGINS` | For the app | Comma-separated browser origins allowed by CORS, for example `https://takeflow-sandy.vercel.app,http://localhost:3100` |
 | `TRUST_PROXY_HOPS` | No | Proxies in front of the API: `1` on Vercel, `0` locally. Lets the public rate limiter see the real client address |
 | `PORT` | No | Default `3000` |
@@ -197,6 +198,7 @@ All routes sit under `/api/v1`. The full contract is in the OpenAPI document at 
 | `GET /pay/options` | Supported currencies and coin and network pairs |
 | `GET /pay/:paymentReference` | Payment page data. Optional `?currency=` for a display conversion |
 | `POST /pay/:paymentReference/quote` | Gets or refreshes the price quote. Creates the Roqqu address on first use |
+| `POST /pay/:paymentReference/simulate-payment` | Demo mode only (404 otherwise). Body `{ "portion": "full" }` or `{ "portion": "part" }` |
 | `GET /pay/links/:reference` | Product link details with an indicative crypto amount |
 | `POST /pay/links/:reference/checkouts` | Starts a buyer's own checkout from a product link |
 | `POST /webhooks/roqqu` | Roqqu webhook receiver (verified by decryption, not by login) |
@@ -290,7 +292,12 @@ Steps for a new environment:
 ## Status and known issues
 
 - **Roqqu's bot check and the relay.** On 5 Nov 2026, Roqqu's Cloudflare answered every request from the Vercel server with a "Just a moment..." browser check (HTTP 403), even calls carrying the API key. The hosted API now calls Roqqu through the [`roqqu-relay`](roqqu-relay/README.md) Worker, whose calls leave from Africa. With it, the live API gets real rates and prices. Asking Roqqu to let server traffic through is still the cleaner long-term fix.
-- **A valid Roqqu Test key is needed.** The Test key tried on 5 Nov 2026 was rejected by Roqqu ("Invalid API Key") with both the `x-staging-api-key` and `x-api-key` headers. Until a valid key is set, the payment page cannot create receiving addresses, so live quotes fail.
+- **A valid Roqqu Test key is needed, so the live site runs in demo mode.** The Test key tried on 5 Nov 2026 was rejected by Roqqu ("Invalid API Key") with both the `x-staging-api-key` and `x-api-key` headers. Until a valid key is set, the live API runs with `DEMO_PAYMENTS=true`:
+  - Rates and prices are real (from Roqqu through the relay).
+  - Receiving addresses are simulated, and their wallet records are marked `simulated`.
+  - The payment page shows "Simulate a part payment" and "Simulate the full payment".
+  - Simulated deposits get a `sim_` hash and no explorer link. They run through the same matching, valuation and balance code as verified Roqqu deposits; only the Roqqu verification step is skipped.
+  - To go live, set a valid key and `DEMO_PAYMENTS=false`.
 - **Roqqu's service was unsteady on 5 Nov 2026.** Its feeds sometimes returned HTTP 502 or "rates data still syncing". TakeFlow falls back to the last good rates for up to 30 minutes.
 - **Questions for Roqqu** (not answered by the docs):
   1. How to send a test deposit in Test mode.
