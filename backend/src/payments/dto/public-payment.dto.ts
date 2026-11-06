@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { InvoiceKind, InvoiceStatus, ValuationMethod } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { PRICE_CURRENCIES } from '../../pricing/catalog.js';
 import { IsPriceCurrency } from '../../pricing/validators.js';
 
@@ -168,8 +168,24 @@ export class PublicPaymentDto {
   })
   display!: PublicDisplayAmountsDto | null;
 
+  @ApiProperty({
+    description:
+      'True in demo mode (DEMO_PAYMENTS=true): addresses are simulated and the page may send simulated payments.',
+  })
+  demoPayments!: boolean;
+
   @ApiProperty({ description: 'Server clock, to keep the countdown in step' })
   serverTime!: Date;
+}
+
+export class SimulatePaymentDto {
+  @ApiProperty({
+    enum: ['full', 'part'],
+    example: 'full',
+    description: 'Demo mode only: send the whole quoted amount, or half of it to show a part payment',
+  })
+  @IsIn(['full', 'part'])
+  portion!: 'full' | 'part';
 }
 
 export class PublicPaymentQueryDto {

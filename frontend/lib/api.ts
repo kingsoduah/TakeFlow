@@ -113,6 +113,8 @@ export interface TakeFlowApi {
   getPayOptions(): Promise<PayOptions>;
   getPayment(reference: string, displayCurrency?: Currency | null): Promise<PublicPayment>;
   requestQuote(reference: string, displayCurrency?: Currency | null): Promise<PublicPayment>;
+  /** Demo mode only: sends a simulated payment of the full quoted amount or half of it. */
+  simulatePayment(reference: string, portion: "full" | "part", displayCurrency?: Currency | null): Promise<PublicPayment>;
   getProductLinkPage(reference: string): Promise<PublicProductLink>;
   startProductCheckout(reference: string, input: StartCheckoutInput): Promise<PublicPayment>;
 }
@@ -441,6 +443,8 @@ const liveApi: TakeFlowApi = {
   getPayOptions: () => request("GET", "/pay/options", { auth: false }),
   getPayment: (ref, currency) => request("GET", `/pay/${enc(ref)}`, { auth: false, query: { currency } }),
   requestQuote: (ref, currency) => request("POST", `/pay/${enc(ref)}/quote`, { auth: false, query: { currency } }),
+  simulatePayment: (ref, portion, currency) =>
+    request("POST", `/pay/${enc(ref)}/simulate-payment`, { body: { portion }, auth: false, query: { currency } }),
   getProductLinkPage: (ref) => request("GET", `/pay/links/${enc(ref)}`, { auth: false }),
   startProductCheckout: (ref, input) => request("POST", `/pay/links/${enc(ref)}/checkouts`, { body: input, auth: false }),
 };

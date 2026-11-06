@@ -19,6 +19,7 @@ npm start          # serves the production build on port 3100
 
 - `NEXT_PUBLIC_USE_MOCKS=true` runs every screen on built-in sample data with no API calls. Any email and password signs in, and the payment page shows sample-only buttons to send a part or full payment.
 - `NEXT_PUBLIC_USE_MOCKS=false` with `NEXT_PUBLIC_API_URL` set (for example `https://takeflow-api.vercel.app/api/v1`) uses the real API. The API's `FRONTEND_ORIGINS` must include this app's address.
+- When the API runs in demo mode (`DEMO_PAYMENTS=true`), the payment page shows "Simulate a part payment" and "Simulate the full payment". These go through the API's real matching code, so the dashboard updates for real. Simulated payments (hash `sim_…`) get no explorer link.
 
 ## Pages
 

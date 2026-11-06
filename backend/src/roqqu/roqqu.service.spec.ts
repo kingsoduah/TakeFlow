@@ -52,6 +52,43 @@ describe('RoqquService', () => {
     expect(headers['x-staging-api-key']).toBe('staging-key-123');
   });
 
+  it('sends the relay secret only when one is configured', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'success', message: 'ok', data: [] }));
+    const store: Record<string, string> = {
+      ROQQU_BASE_URL: 'https://relay.example.workers.dev/v1',
+      ROQQU_ENV: 'staging',
+      ROQQU_STAGING_API_KEY: 'staging-key-123',
+      ROQQU_RELAY_SECRET: 'relay-secret-abc',
+    };
+    const relayed = new RoqquService({ get: (k: string) => store[k] } as unknown as ConfigService);
+    await relayed.getFiatRates();
+    const [relayUrl, relayInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(relayUrl).toBe('https://relay.example.workers.dev/v1/rates');
+    expect((relayInit.headers as Record<string, string>)['x-relay-secret']).toBe('relay-secret-abc');
+
+    fetchMock.mockClear();
+    await makeService('staging').getFiatRates();
+    const [, directInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((directInit.headers as Record<string, string>)['x-relay-secret']).toBeUndefined();
+  });
+
+  it('simulates addresses in demo mode without calling Roqqu', async () => {
+    const store: Record<string, unknown> = { ROQQU_ENV: 'staging', DEMO_PAYMENTS: true };
+    const demo = new RoqquService({ get: (k: string) => store[k] } as unknown as ConfigService);
+    const customer = { email: 'a@b.c', first_name: 'A', last_name: 'B' };
+
+    const tron = await demo.generateWallet('trc20', customer);
+    const bsc = await demo.generateWallet('bep20', customer);
+    const base = await demo.generateWallet('base', customer);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(demo.simulatesPayments).toBe(true);
+    expect(tron.data.address).toMatch(/^T[1-9A-HJ-NP-Za-km-z]{33}$/);
+    expect(bsc.data.address).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(base.data.address).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(makeService('staging').simulatesPayments).toBe(false);
+  });
+
   it('still fetches the market feeds keyless when no key is configured', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 'success', message: 'ok', data: {} }));
     const config = {

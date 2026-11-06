@@ -12,8 +12,10 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { PriceUnavailableError, QuotesService } from '../quotes/quotes.service.js';
 import { RatesService } from '../rates/rates.service.js';
 import { RoqquError } from '../roqqu/roqqu.service.js';
+import { ConfigService } from '@nestjs/config';
+import { ReconciliationService } from '../reconciliation/reconciliation.service.js';
 import { WalletsService } from '../wallets/wallets.service.js';
-import { PublicPaymentsService } from './public-payments.service.js';
+import { PublicPaymentsService, simulatedDepositAmount } from './public-payments.service.js';
 
 const D = (v: string) => new Prisma.Decimal(v);
 const REF = 'pay_0123456789abcdef0123456789abcdef';
@@ -98,6 +100,59 @@ describe('PublicPaymentsService', () => {
       walletsMock as unknown as WalletsService,
       checkoutsMock as unknown as CheckoutsService,
     );
+  });
+
+  describe('demo payments', () => {
+    const reconciliationMock = { reconcileVerifiedDeposit: vi.fn() };
+    const demoConfig = {
+      get: (key: string) => (key === 'DEMO_PAYMENTS' ? true : undefined),
+    } as unknown as ConfigService;
+    const demoService = () =>
+      new PublicPaymentsService(
+        prismaMock as unknown as PrismaService,
+        quotesMock as unknown as QuotesService,
+        ratesMock as unknown as RatesService,
+        walletsMock as unknown as WalletsService,
+        checkoutsMock as unknown as CheckoutsService,
+        reconciliationMock as unknown as ReconciliationService,
+        demoConfig,
+      );
+
+    it('is off by default: no simulate route and the page says so', async () => {
+      await expect(service.simulatePayment(REF, 'full', undefined, NOW)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      const view = await service.getPayment(REF, undefined, NOW);
+      expect(view.demoPayments).toBe(false);
+    });
+
+    it('sends the full quoted amount through the real matching code', async () => {
+      quotesMock.findActive.mockResolvedValue(quoteRow());
+      const view = await demoService().simulatePayment(REF, 'full', undefined, NOW);
+
+      expect(reconciliationMock.reconcileVerifiedDeposit).toHaveBeenCalledOnce();
+      const deposit = reconciliationMock.reconcileVerifiedDeposit.mock.calls[0][0];
+      expect(deposit.amount.toFixed()).toBe('1333.34');
+      expect(deposit.receivingAddress).toBe('TAddress123');
+      expect(deposit.asset).toBe('USDT');
+      expect(deposit.network).toBe('trc20');
+      expect(deposit.transactionHash).toMatch(/^sim_[0-9a-f]{32}$/);
+      expect(deposit.providerReference).toBe('simulated');
+      expect(deposit.depositedAt).toEqual(NOW);
+      expect(view.demoPayments).toBe(true);
+    });
+
+    it('sends half the quoted amount for a part payment', async () => {
+      quotesMock.findActive.mockResolvedValue(quoteRow());
+      await demoService().simulatePayment(REF, 'part', undefined, NOW);
+      const deposit = reconciliationMock.reconcileVerifiedDeposit.mock.calls[0][0];
+      expect(deposit.amount.toFixed()).toBe('666.67');
+    });
+
+    it('rounds half down to the coin precision', () => {
+      expect(simulatedDepositAmount(D('1333.33'), 'part', 2).toFixed()).toBe('666.66');
+      expect(simulatedDepositAmount(D('1333.33'), 'full', 2).toFixed()).toBe('1333.33');
+    });
   });
 
   describe('not leaking data', () => {

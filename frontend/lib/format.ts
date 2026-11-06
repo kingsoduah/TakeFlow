@@ -86,8 +86,19 @@ export function networkName(n: Network | string): string {
   return NETWORK_NAME[n] ?? n.toUpperCase();
 }
 
-// Explorer links per network.
-export function explorerFor(network: string): { name: string; tx: (hash: string) => string; address: (a: string) => string } | null {
+// Demo mode payments have hashes starting with sim_. They never happened on
+// chain, so they get no explorer link.
+export function isSimulatedTx(hash: string | null | undefined): boolean {
+  return !!hash && hash.startsWith("sim_");
+}
+
+// Explorer links per network. Pass the transaction hash where a transaction
+// link is shown, so simulated payments get none.
+export function explorerFor(
+  network: string,
+  txHash?: string | null,
+): { name: string; tx: (hash: string) => string; address: (a: string) => string } | null {
+  if (isSimulatedTx(txHash)) return null;
   switch (network) {
     case "trc20":
       return {

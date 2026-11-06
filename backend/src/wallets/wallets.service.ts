@@ -100,6 +100,9 @@ export class WalletsService {
         address,
         network: invoice.network,
         customerEmail: customer.email,
+        // Demo mode addresses are marked so they are never mistaken for
+        // real Roqqu wallets.
+        ...(this.roqqu.simulatesPayments ? { provider: 'simulated' } : {}),
       },
     });
     const assigned = await this.prisma.invoice.updateMany({

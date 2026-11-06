@@ -42,7 +42,7 @@ function PaymentRow({ t, showReceiving }: { t: Transaction; showReceiving: boole
   const inv = t.invoice;
   const when = formatDateTime(t.occurredAt ?? t.createdAt);
   const isOrder = inv?.kind === "CHECKOUT";
-  const explorer = explorerFor(t.network);
+  const explorer = explorerFor(t.network, t.transactionHash);
   let who: React.ReactNode;
   if (!inv) {
     who = (
