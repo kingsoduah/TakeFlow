@@ -37,6 +37,29 @@ const NAV = [
   { href: "#security", label: "Security" },
 ];
 
+// Sample invoices for the hero's "Bill in" switch, at Roqqu's rates of 5 Nov 2026.
+type Ccy = "NGN" | "USD" | "GBP" | "EUR" | "GHS";
+const CCYS: Ccy[] = ["NGN", "USD", "GBP", "EUR", "GHS"];
+const DEALS: Record<Ccy, { inv: string; fiat: string; due: string; net: string; crypto: string }> = {
+  NGN: { inv: "INV-1033 · Adebayo & Co.", fiat: "₦2,200,000.00", due: "Due 18 Nov", net: "BEP20 · 1 USDT = ₦1,375", crypto: "1,600.00 USDT" },
+  USD: { inv: "INV-1036 · Maple & Pine Co.", fiat: "$4,500.00", due: "Due 13 Nov", net: "Base · 1 USDC = $1.00", crypto: "4,500.00 USDC" },
+  GBP: { inv: "INV-1042 · Northgate Labs", fiat: "£1,000.00", due: "Due 20 Nov", net: "TRC20 · 1 USDT = £0.75", crypto: "1,333.34 USDT" },
+  EUR: { inv: "INV-1035 · Savanna Health", fiat: "€2,990.00", due: "Due 22 Nov", net: "TRC20 · 1 USDT = €0.92", crypto: "3,250.00 USDT" },
+  GHS: { inv: "INV-1029 · Volta Fintech", fiat: "GH₵61,500.00", due: "Due 16 Nov", net: "Base · 1 USDC = GH₵12.30", crypto: "5,000.00 USDC" },
+};
+
+// The three ways a client can pay, each landing on a sample invoice.
+const RAILS = [
+  { coin: "USDT", net: "tron" as const, netName: "Tron", std: "TRC20", inv: "INV-1042 · Northgate Labs", fiat: "£1,000.00", via: "1,333.34 USDT on Tron (TRC20)" },
+  { coin: "USDT", net: "bnb" as const, netName: "BNB Smart Chain", std: "BEP20", inv: "INV-1033 · Adebayo & Co.", fiat: "₦2,200,000.00", via: "1,600.00 USDT on BNB Smart Chain (BEP20)" },
+  { coin: "USDC", net: "base" as const, netName: "Base", std: "", inv: "INV-1036 · Maple & Pine Co.", fiat: "$4,500.00", via: "4,500.00 USDC on Base" },
+];
+// Ribbons from the three rails into the Roqqu check (desktop: left to right; phone: top to bottom).
+const FLOW_H = ["M0 38 C 110 38, 90 130, 200 130", "M0 130 L 200 130", "M0 222 C 110 222, 90 130, 200 130"];
+const FLOW_V = ["M50 0 C 50 48, 150 32, 150 80", "M150 0 L 150 80", "M250 0 C 250 48, 150 32, 150 80"];
+
+const money2 = (v: number) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 // ---------- motion helpers (all optional: the page reads fine without them) ----------
 
 function motionAllowed() {
@@ -79,11 +102,32 @@ export function LandingView() {
   const [menu, setMenu] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [arrive, setArrive] = useState<Beat>("final");
-  const [matched, setMatched] = useState<Beat>("final");
   const [money, setMoney] = useState(false);
   const [copied, setCopied] = useState(false);
   const menuBtn = useRef<HTMLButtonElement>(null);
   const left = useHold();
+  const timers = useRef<number[]>([]);
+
+  // Hero "Bill in" switch: the pill moves at once, the cards re-price after a short fade.
+  const [picked, setPicked] = useState<Ccy>("GBP");
+  const [deal, setDeal] = useState<Ccy>("GBP");
+  const [dealSwap, setDealSwap] = useState(false);
+  const [thumb, setThumb] = useState<{ x: number; w: number } | null>(null);
+  const billRef = useRef<HTMLDivElement>(null);
+
+  // Pay with: which rail is lit, and which invoice the card shows.
+  const [rail, setRail] = useState(0);
+  const [railShown, setRailShown] = useState(0);
+  const [railSwap, setRailSwap] = useState(false);
+  const [railFlash, setRailFlash] = useState(0);
+  const [ping, setPing] = useState(false);
+  const railNow = useRef(0);
+  const railAuto = useRef(true);
+  const railsRef = useRef<HTMLDivElement>(null);
+
+  // How it works: scenes 1 and 3 play once they are on screen.
+  const [one, setOne] = useState<"final" | "start" | "go" | "done">("final");
+  const [three, setThree] = useState<"final" | "start" | "go" | "done">("final");
 
   // Scroll reveals and story beats. Elements already on screen are left
   // alone; elements below the fold play their entrance when they arrive.
@@ -93,10 +137,8 @@ export function LandingView() {
     if (!el || !motionAllowed()) return () => clearTimeout(t);
     const below = (n: Element) => n.getBoundingClientRect().top > window.innerHeight;
     const arriveEl = el.querySelector("[data-beat='arrive']");
-    const matchedEl = el.querySelector("[data-beat='matched']");
     const pre = setTimeout(() => {
       if (arriveEl && below(arriveEl)) setArrive("start");
-      if (matchedEl && below(matchedEl)) setMatched("start");
     }, 0);
     const timers: ReturnType<typeof setTimeout>[] = [];
     const io = new IntersectionObserver(
@@ -111,7 +153,6 @@ export function LandingView() {
             timers.push(setTimeout(() => setArrive((b) => (b === "start" ? "play" : b)), 450));
             timers.push(setTimeout(() => setArrive((b) => (b === "play" ? "done" : b)), 1900));
           }
-          if (beat === "matched") timers.push(setTimeout(() => setMatched((b) => (b === "start" ? "done" : b)), 700));
           if (beat === "money") setMoney(true);
         }
       },
@@ -141,10 +182,133 @@ export function LandingView() {
     return () => document.removeEventListener("keydown", onKey);
   }, [menu]);
 
+  // Clear any pending beat timers when the page goes away.
+  useEffect(() => {
+    const list = timers.current;
+    return () => list.forEach(clearTimeout);
+  }, []);
+
+  // The white pill under the chosen currency.
+  const measure = useCallback(() => {
+    const on = billRef.current?.querySelector<HTMLElement>('button[aria-pressed="true"]');
+    if (on) setThumb({ x: on.offsetLeft, w: on.offsetWidth });
+  }, []);
+  useEffect(() => {
+    const raf = requestAnimationFrame(measure);
+    return () => cancelAnimationFrame(raf);
+  }, [picked, measure]);
+  useEffect(() => {
+    window.addEventListener("resize", measure);
+    document.fonts?.ready.then(measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [measure]);
+
+  const pick = (c: Ccy) => {
+    if (c === picked) return;
+    setPicked(c);
+    if (!motionAllowed()) {
+      setDeal(c);
+      return;
+    }
+    setDealSwap(true);
+    timers.current.push(
+      window.setTimeout(() => {
+        setDeal(c);
+        setDealSwap(false);
+      }, 210),
+    );
+  };
+
+  const showRail = useCallback((i: number) => {
+    railNow.current = i;
+    setRail(i);
+    if (!motionAllowed()) {
+      setRailShown(i);
+      return;
+    }
+    setRailSwap(true);
+    timers.current.push(
+      window.setTimeout(() => {
+        setRailShown(i);
+        setRailSwap(false);
+        setRailFlash((k) => k + 1);
+        setPing(true);
+        timers.current.push(window.setTimeout(() => setPing(false), 650));
+      }, 210),
+    );
+  }, []);
+
+  // Pay with steps through the three rails while it is on screen, until someone picks one.
+  useEffect(() => {
+    const el = railsRef.current;
+    if (!el || !motionAllowed()) return;
+    let id: number | undefined;
+    const io = new IntersectionObserver(
+      ([e]) => {
+        window.clearInterval(id);
+        if (e.isIntersecting && railAuto.current) {
+          id = window.setInterval(() => {
+            if (!railAuto.current) return window.clearInterval(id);
+            showRail((railNow.current + 1) % RAILS.length);
+          }, 3400);
+        }
+      },
+      { threshold: 0.35 },
+    );
+    io.observe(el);
+    return () => {
+      io.disconnect();
+      window.clearInterval(id);
+    };
+  }, [showRail]);
+
+  // How it works: scenes below the fold start "empty" and fill in when half on screen.
+  useEffect(() => {
+    const el = root.current;
+    if (!el || !motionAllowed()) return;
+    const below = (n: Element) => n.getBoundingClientRect().top > window.innerHeight;
+    const s1 = el.querySelector("[data-scene='one']");
+    const s3 = el.querySelector("[data-scene='three']");
+    const local: number[] = [];
+    local.push(
+      window.setTimeout(() => {
+        if (s1 && below(s1)) setOne("start");
+        if (s3 && below(s3)) setThree("start");
+      }, 0),
+    );
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          io.unobserve(e.target);
+          const which = (e.target as HTMLElement).dataset.scene;
+          if (which === "one") {
+            local.push(window.setTimeout(() => setOne((b) => (b === "start" ? "go" : b)), 50));
+            local.push(window.setTimeout(() => setOne((b) => (b === "go" ? "done" : b)), 750));
+          }
+          if (which === "three") {
+            local.push(window.setTimeout(() => setThree((b) => (b === "start" ? "go" : b)), 350));
+            local.push(window.setTimeout(() => setThree((b) => (b === "go" ? "done" : b)), 1050));
+          }
+        }
+      },
+      { threshold: 0.55 },
+    );
+    [s1, s3].forEach((n) => n && io.observe(n));
+    return () => {
+      local.forEach(clearTimeout);
+      io.disconnect();
+    };
+  }, []);
+
   const currencies = useCountUp(5, loaded);
   const networks = useCountUp(3, loaded);
   const lock = useCountUp(5, loaded);
   const paid = useCountUp(39719.21, money, 2, 1300);
+  const famt = useCountUp(1000, one === "go" || one === "done", 2, 900);
+  const fpays = useCountUp(1333.34, one === "done", 2, 1000);
+  const d = DEALS[deal];
+  const rs = RAILS[railShown];
 
   const copy = useCallback(async () => {
     await copyText(CODE);
@@ -220,7 +384,8 @@ export function LandingView() {
 
           <div className={cx(s.heroHead, s.dark)}>
             <span className={cx(s.eyebrow, s.onDark)}>
-              <span className={s.dot} />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/brand/roqqu-symbol.png" alt="" width={20} height={20} className={s.rq} />
               Built on Roqqu API Services
             </span>
             <h1>
@@ -242,66 +407,78 @@ export function LandingView() {
                   <Icon name="up" className={s.icon} />
                 </a>
               </div>
+              <dl className={s.specs}>
+                <div className={s.spec}>
+                  <dt>Currencies</dt>
+                  <dd className={s.num}>{currencies}</dd>
+                </div>
+                <div className={s.spec}>
+                  <dt>Stablecoin networks</dt>
+                  <dd className={s.num}>{networks}</dd>
+                </div>
+                <div className={s.spec}>
+                  <dt>Price lock</dt>
+                  <dd className={s.num}>
+                    {lock}
+                    <small>min</small>
+                  </dd>
+                </div>
+              </dl>
             </div>
 
-            <div className={s.stage} role="img" aria-label="Three stacked cards: invoice INV-1042 for Northgate Labs, £1,000.00 due 20 Nov; a payment of 1,333.34 USDT on TRC20, matched; and the invoice marked paid in full.">
-              <div className={s.scaler}>
+            <div className={s.stage}>
+              <div className={s.billIn} ref={billRef} role="group" aria-label="Bill in a currency" data-ready={thumb ? "" : undefined}>
+                <span className={s.billLbl} aria-hidden="true">
+                  Bill in
+                </span>
+                <div className={s.billOpts}>
+                  {thumb && <span className={s.billThumb} aria-hidden="true" style={{ width: thumb.w, transform: `translateX(${thumb.x}px)` }} />}
+                  {CCYS.map((c) => (
+                    <button key={c} type="button" aria-pressed={picked === c} onClick={() => pick(c)}>
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div
+                className={cx(s.scaler, dealSwap && s.swapping)}
+                role="img"
+                aria-label={`Invoice ${d.inv}, ${d.fiat}, due ${d.due.slice(4)}. The client pays ${d.crypto} on ${d.net.replace(" · ", " at ")}, matched. The invoice is paid in full.`}
+              >
                 <div className={s.ground} />
                 <div className={s.iso} aria-hidden="true">
                   <div className={cx(s.card, s.cardNavy)}>
                     <div className={s.band2}>
                       <div>
-                        <div className={s.k}>INV-1042 · Northgate Labs</div>
-                        <div className={s.big}>£1,000.00</div>
+                        <div className={cx(s.k, s.sw)}>{d.inv}</div>
+                        <div className={cx(s.big, s.sw)}>{d.fiat}</div>
                       </div>
-                      <span className={s.due}>Due 20 Nov</span>
+                      <span className={cx(s.due, s.sw)}>{d.due}</span>
                     </div>
                   </div>
                   <div className={cx(s.card, s.cardTeal)}>
                     <div className={s.band2}>
                       <div>
-                        <div className={s.k}>TRC20 · from TQ8m…v4Jk</div>
-                        <div className={s.big}>1,333.34 USDT</div>
+                        <div className={cx(s.k, s.sw)}>{d.net}</div>
+                        <div className={cx(s.big, s.sw)}>{d.crypto}</div>
                       </div>
-                      <span className={cx(s.badge, s.bPaid)}>Matched</span>
+                      <span className={s.mtag}>Matched</span>
                     </div>
                   </div>
                   <div className={cx(s.card, s.cardGlass)}>
                     <div className={s.cardTop}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src="/brand/takeflow-symbol.png" alt="" width={34} height={30} style={{ width: 34, height: "auto" }} />
-                      <span className={s.chk}>
-                        <Icon name="check" className={s.icon} />
-                      </span>
                     </div>
                     <div className={s.paidText}>Paid in full</div>
-                    <div className={s.cardSub}>INV-1042 · £1,000.00 received</div>
+                    <div className={cx(s.cardSub, s.sw)}>
+                      {d.inv.split(" · ")[0]} · {d.fiat} received
+                    </div>
                     <div className={s.prog}>
                       <i />
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            <div className={s.facts}>
-              <div className={s.fact}>
-                <div className={cx(s.factN, s.num)}>{currencies}</div>
-                <div className={s.factL}>Currencies</div>
-                <div className={s.factS}>NGN · USD · GBP · EUR · GHS</div>
-              </div>
-              <div className={s.fact}>
-                <div className={cx(s.factN, s.num)}>{networks}</div>
-                <div className={s.factL}>Stablecoin networks</div>
-                <div className={s.factS}>USDT TRC20 · USDT BEP20 · USDC Base</div>
-              </div>
-              <div className={s.fact}>
-                <div className={cx(s.factN, s.num)}>
-                  {lock}
-                  <small>min</small>
-                </div>
-                <div className={s.factL}>Price lock</div>
-                <div className={s.factS}>Live Roqqu rate, held with a countdown</div>
               </div>
             </div>
           </div>
@@ -312,39 +489,103 @@ export function LandingView() {
         {/* ============================ PAY WITH ============================ */}
         <section className={s.paywith} id="security" aria-labelledby="pw-title" style={{ scrollMarginTop: 16 }}>
           <div className={s.wrap}>
-            <h2 id="pw-title" data-reveal="">
-              Pay with
-            </h2>
-            <div className={s.pwGrid}>
-              <div className={s.tile} data-reveal="">
-                <CoinGlyph asset="USDT" />
-                <span>USDT</span>
+            <div className={s.pwHead}>
+              <div>
+                <span className={cx(s.eyebrow, s.onLight)}>Pay with</span>
+                <h2 id="pw-title" className={s.h2x} data-reveal="">
+                  Clients pay in USDT or USDC.<span className={s.soft}>Every payment verified with Roqqu.</span>
+                </h2>
               </div>
-              <div className={s.tile} data-reveal="" style={{ ["--rd" as string]: ".05s" }}>
-                <CoinGlyph asset="USDC" />
-                <span>USDC</span>
-              </div>
-              <div className={s.tile} data-reveal="" style={{ ["--rd" as string]: ".1s" }}>
-                <NetMark kind="tron" />
-                <span>Tron</span>
-              </div>
-              <div className={s.tile} data-reveal="" style={{ ["--rd" as string]: ".15s" }}>
-                <NetMark kind="bnb" />
-                <span>BNB Smart Chain</span>
-              </div>
-              <div className={s.tile} data-reveal="" style={{ ["--rd" as string]: ".2s" }}>
-                <NetMark kind="base" />
-                <span>Base</span>
-              </div>
-              <div className={s.verifyNote} data-reveal="" style={{ ["--rd" as string]: ".25s" }}>
-                <span className={s.sh}>
-                  <Icon name="shield" className={s.icon} />
+              <p className={s.lede} data-reveal="">
+                You pick the coin and network on each invoice. Your client sends that exact amount, and TakeFlow matches it.
+              </p>
+            </div>
+
+            <div className={s.rails} ref={railsRef} data-reveal="">
+              <ul className={s.railList} aria-label="Ways to pay">
+                {RAILS.map((r, i) => (
+                  <li key={r.netName}>
+                    <button
+                      type="button"
+                      className={s.rail}
+                      aria-pressed={rail === i}
+                      onClick={() => {
+                        railAuto.current = false;
+                        showRail(i);
+                      }}
+                    >
+                      <span className={s.pair} aria-hidden="true">
+                        <CoinGlyph asset={r.coin} className={s.pairCoin} />
+                        <span className={s.pairNet}>
+                          <NetMark kind={r.net} />
+                        </span>
+                      </span>
+                      <span className={s.railText}>
+                        <b>{r.coin}</b>
+                        <small>
+                          {r.std ? (
+                            <>
+                              <span className={s.lg}>{r.netName} · </span>
+                              {r.std}
+                            </>
+                          ) : (
+                            r.netName
+                          )}
+                        </small>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+
+              <svg className={cx(s.flow, s.flowH)} viewBox="0 0 200 260" preserveAspectRatio="none" aria-hidden="true">
+                {FLOW_H.map((p, i) => (
+                  <path key={`b${i}`} className={cx(s.rb, rail === i && s.on)} d={p} />
+                ))}
+                {FLOW_H.map((p, i) => (
+                  <path key={`f${i}`} className={cx(s.rf, rail === i && s.on)} d={p} pathLength={100} />
+                ))}
+              </svg>
+              <svg className={cx(s.flow, s.flowV)} viewBox="0 0 300 80" preserveAspectRatio="none" aria-hidden="true">
+                {FLOW_V.map((p, i) => (
+                  <path key={`b${i}`} className={cx(s.rb, rail === i && s.on)} d={p} />
+                ))}
+                {FLOW_V.map((p, i) => (
+                  <path key={`f${i}`} className={cx(s.rf, rail === i && s.on)} d={p} pathLength={100} />
+                ))}
+              </svg>
+
+              <div className={cx(s.node, ping && s.ping)}>
+                <span className={s.disc}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src="/brand/roqqu-symbol.png" alt="Roqqu" width={50} height={50} />
                 </span>
-                <div>
-                  <b>Every payment verified with Roqqu</b>
-                  <span>No invoice is marked paid until Roqqu confirms the deposit.</span>
-                </div>
+                <span className={s.nodeCap}>
+                  <b>Checked with Roqqu</b>
+                  <small>No invoice is marked paid until Roqqu confirms the deposit.</small>
+                </span>
               </div>
+
+              <svg className={cx(s.flow, s.flowH, s.out)} viewBox="0 0 100 260" preserveAspectRatio="none" aria-hidden="true">
+                <path className={cx(s.rb, s.on)} d="M0 130 L 100 130" />
+                <path className={cx(s.rf, s.on)} d="M0 130 L 100 130" pathLength={100} />
+              </svg>
+              <svg className={cx(s.flow, s.flowV, s.out)} viewBox="0 0 100 48" preserveAspectRatio="none" aria-hidden="true">
+                <path className={cx(s.rb, s.on)} d="M50 0 L 50 48" />
+                <path className={cx(s.rf, s.on)} d="M50 0 L 50 48" pathLength={100} />
+              </svg>
+
+              <article className={cx(s.pwInv, railSwap && s.swapping)}>
+                <div className={s.pwR1}>
+                  <span className={s.sw}>{rs.inv}</span>
+                  <span className={cx(s.pill, s.pillPaid)}>Paid</span>
+                </div>
+                <div className={cx(s.pwAmt, s.num, s.sw)}>{rs.fiat}</div>
+                <div className={cx(s.pwVia, s.num, s.sw)}>{rs.via}</div>
+                <div className={s.pwBar}>
+                  <i key={railFlash} className={railFlash ? s.fill : undefined} />
+                </div>
+              </article>
             </div>
           </div>
         </section>
@@ -609,117 +850,197 @@ export function LandingView() {
         <section className={s.sec} id="how" aria-labelledby="how-title">
           <div className={s.wrap}>
             <div className={cx(s.secHead, s.center)}>
-              <span className={cx(s.eyebrow, s.onLight)}>
-                <span className={s.dot} />
-                How it works
-              </span>
-              <h2 id="how-title" data-reveal="">
-                From invoice to paid in three steps
+              <span className={cx(s.eyebrow, s.onLight)}>How it works</span>
+              <h2 id="how-title" className={s.h2x} data-reveal="">
+                One payment link per invoice.<span className={s.soft}>TakeFlow matches every deposit for you.</span>
               </h2>
             </div>
-            <div className={s.steps}>
-              <article className={s.step} data-reveal="">
-                <div className={s.stage2}>
-                  <div className={s.mini} aria-hidden="true">
-                    <div className={s.miniH}>
-                      New invoice <span className={cx(s.badge, s.bWaiting)}>Draft</span>
-                    </div>
-                    <div className={s.mfield}>
-                      <span>Client</span>
-                      <div className={s.in}>Northgate Labs</div>
-                    </div>
-                    <div className={s.mfield}>
-                      <span>Currency</span>
-                      <div className={s.ccyPick}>
-                        <span>NGN</span>
-                        <span>USD</span>
-                        <span className={s.on}>GBP</span>
-                        <span>EUR</span>
-                        <span>GHS</span>
-                      </div>
-                    </div>
-                    <div className={s.mfield}>
-                      <span>Amount</span>
-                      <div className={cx(s.in, s.num)}>
-                        £1,000.00 <span style={{ fontSize: 12, color: "var(--ink-2)" }}>Due 20 Nov</span>
-                      </div>
-                    </div>
-                    <div className={s.go}>Send invoice</div>
-                  </div>
+            <div className={s.steps3}>
+              <article className={cx(s.st, (one === "start" || one === "go") && s.stHide)} data-reveal="">
+                <div className={s.stH}>
+                  <span className={s.stNo}>01</span>
+                  <h3>Create the invoice</h3>
                 </div>
-                <h3>
-                  <span className={s.no}>1</span>Create an invoice
-                </h3>
-                <p>Set the amount in NGN, USD, GBP, EUR or GHS and send the payment link to your client.</p>
-              </article>
-
-              <article className={s.step} data-reveal="" style={{ ["--rd" as string]: ".1s" }}>
-                <div className={s.stage2}>
-                  <div className={s.phone} role="img" aria-label="The payment page on a phone: £1,000.00, send 1,333.34 USDT on TRC20, with a QR code and a countdown">
-                    <div className={s.scr}>
-                      <div className={s.notch} />
-                      <div className={s.pwho}>Lumen Studio · INV-1042</div>
-                      <div className={cx(s.fiat, s.num)}>£1,000.00</div>
-                      <div className={s.sendl}>Send on TRC20</div>
-                      <div className={cx(s.cr, s.num)}>1,333.34 USDT</div>
-                      <div className={s.qr} aria-hidden="true">
-                        <QRCodeSVG value="TQ8mR3vX7cJk2Pq9WfLz5hYbN4dE6sAv4Jk" size={106} level="M" marginSize={0} fgColor="#101D30" />
+                <p>Price it in NGN, USD, GBP, EUR or GHS and choose USDT or USDC.</p>
+                <div
+                  className={s.scene}
+                  data-scene="one"
+                  role="img"
+                  aria-label="The New invoice form: client Northgate Labs, priced in GBP at £1,000.00, due 20 Nov 2026, paid in USDT on Tron (TRC20). Your client pays 1,333.34 USDT at 1 USDT = £0.75."
+                >
+                  <div className={cx(s.ui, s.fCard)} aria-hidden="true">
+                    <div className={s.fT}>New invoice</div>
+                    <div className={s.fld}>
+                      <span className={s.lb}>Client</span>
+                      <div className={s.uin}>
+                        Northgate Labs
+                        <Icon name="chevronRight" className={cx(s.icon, s.chev)} />
                       </div>
-                      <div className={s.addr}>
-                        TQ8m…v4Jk <Icon name="copy" className={s.icon} />
+                    </div>
+                    <div className={s.fld}>
+                      <span className={s.lb}>Price currency</span>
+                      <div className={s.seg}>
+                        {CCYS.map((c) => (
+                          <span key={c} className={c === "GBP" ? s.on : undefined}>
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className={cx(s.fld, s.two)}>
+                      <div>
+                        <span className={s.lb}>Amount</span>
+                        <div className={cx(s.uin, s.num)}>
+                          <span>
+                            <span className={s.pre}>£</span>
+                            {money2(famt)}
+                          </span>
+                        </div>
                       </div>
                       <div>
-                        <span className={s.cd}>
-                          <Icon name="clock" className={s.icon} />
-                          <span>{hold}</span>
+                        <span className={s.lb}>Due date</span>
+                        <div className={cx(s.uin, s.num)}>20 Nov 2026</div>
+                      </div>
+                    </div>
+                    <div className={s.fld}>
+                      <span className={s.lb}>Coin and network</span>
+                      <div className={cx(s.uin, s.coin)}>
+                        <span className={s.cw}>
+                          <CoinGlyph asset="USDT" />
+                          USDT<small>Tron (TRC20)</small>
+                        </span>
+                        <span className={s.tick}>
+                          <Icon name="check" className={s.icon} />
                         </span>
                       </div>
                     </div>
                   </div>
-                </div>
-                <h3>
-                  <span className={s.no}>2</span>Client pays
-                </h3>
-                <p>They scan the code and send USDT or USDC from any wallet. The amount is held for 5 minutes.</p>
-              </article>
-
-              <article className={cx(s.step, matched === "start" && s.unmatched)} data-reveal="" data-beat="matched" style={{ ["--rd" as string]: ".2s" }}>
-                <div className={s.stage2}>
-                  <div className={s.drow} aria-hidden="true">
-                    <div className={cx(s.r, s.dim)}>
-                      <div>
-                        <b>INV-1041</b>
-                        <small>Order #A-2291 · Lagos</small>
-                      </div>
-                      <span className={cx(s.badge, s.bPaid)}>Paid</span>
+                  <div className={cx(s.ui, s.pays)} aria-hidden="true">
+                    <div className={s.ucap}>Your client pays</div>
+                    <div className={cx(s.paysV, s.num)}>
+                      {money2(fpays)}
+                      <small>USDT</small>
                     </div>
-                    <div className={cx(s.r, s.hl)}>
-                      <div>
-                        <b>INV-1042</b>
-                        <small>Northgate Labs · London</small>
-                      </div>
-                      <span className={s.swap}>
-                        <span className={cx(s.badge, s.bWaiting, s.before)}>Waiting</span>
-                        <span className={cx(s.badge, s.bPaid, s.after)}>Paid</span>
-                      </span>
-                      <div className={s.pb}>
-                        <i />
-                      </div>
-                      <div className={cx(s.stline, s.num)}>1,333.34 USDT · TRC20 · verified with Roqqu</div>
-                    </div>
-                    <div className={cx(s.r, s.dim)}>
-                      <div>
-                        <b>INV-1039</b>
-                        <small>Kente Commerce · Accra</small>
-                      </div>
-                      <span className={cx(s.badge, s.bPartial)}>Partly paid</span>
+                    <div className={s.paysM}>
+                      on <b>Tron (TRC20)</b> · 1 USDT = £0.75
                     </div>
                   </div>
                 </div>
-                <h3>
-                  <span className={s.no}>3</span>It&apos;s matched
-                </h3>
-                <p>TakeFlow verifies the deposit with Roqqu and marks the invoice paid. Nothing to reconcile by hand.</p>
+              </article>
+
+              <article className={s.st} data-reveal="" style={{ ["--rd" as string]: ".1s" }}>
+                <div className={s.stH}>
+                  <span className={s.stNo}>02</span>
+                  <h3>The client pays</h3>
+                </div>
+                <p>An exact amount at Roqqu&apos;s live rate, held for up to 5 minutes.</p>
+                <div className={s.scene} role="img" aria-label="The payment page on a phone: send exactly 1,333.34 USDT on the Tron (TRC20) network, price held for up to 5 minutes, with a QR code and the deposit address.">
+                  <span className={s.rqChip} aria-hidden="true">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src="/brand/roqqu-symbol.png" alt="" width={24} height={24} />
+                    Live rate from Roqqu
+                  </span>
+                  <div className={s.ph2} aria-hidden="true">
+                    <div className={s.phScr}>
+                      <span className={s.isl} />
+                      <div className={s.who}>
+                        <span className={s.avt}>LS</span>
+                        <div>
+                          <b>Lumen Studio</b>
+                          <small>Invoice INV-1042 · £1,000.00</small>
+                        </div>
+                      </div>
+                      <div className={cx(s.ucap, s.mt16)}>Send exactly</div>
+                      <div className={s.sendRow}>
+                        <span className={cx(s.sendV, s.num)}>1,333.34</span>
+                        <CoinGlyph asset="USDT" />
+                        <b>USDT</b>
+                      </div>
+                      <div className={s.onn}>
+                        on the <b>Tron (TRC20)</b> network
+                      </div>
+                      <div className={s.hold}>
+                        <div className={s.holdR}>
+                          <span>
+                            Price held for<b className={s.num}>{hold}</b>
+                          </span>
+                          <span>1 USDT = £0.75</span>
+                        </div>
+                        <div className={s.holdBar}>
+                          <i style={{ transform: `scaleX(${(left / 300).toFixed(4)})` }} />
+                        </div>
+                      </div>
+                      <div className={s.qrbox}>
+                        <span className={s.qr2}>
+                          <QRCodeSVG value="TQ8mR3vX7cJk2Pq9WfLz5hYbN4dE6sAv4Jk" size={78} level="M" marginSize={0} fgColor="#101D30" />
+                        </span>
+                        <div className={s.addr2}>
+                          <div className={s.ucap}>To this address</div>
+                          <code>TQ8m…sAv4Jk</code>
+                          <span className={s.cp}>
+                            <Icon name="copy" className={s.icon} />
+                            Copy address
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article className={cx(s.st, three === "start" && s.stS3, three === "go" && s.stG3)} data-reveal="" style={{ ["--rd" as string]: ".2s" }}>
+                <div className={s.stH}>
+                  <span className={s.stNo}>03</span>
+                  <h3>Matched and paid</h3>
+                </div>
+                <p>The deposit lands on the right invoice, part payments included. The client gets a receipt.</p>
+                <div
+                  className={s.scene}
+                  data-scene="three"
+                  role="img"
+                  aria-label="The client's receipt: payment received, £1,000.00 paid to Lumen Studio with 1,333.34 USDT on Tron (TRC20). Invoice INV-1042 for Northgate Labs now shows paid."
+                >
+                  <div className={cx(s.ui, s.rcpt)} aria-hidden="true">
+                    <div className={s.rcHd}>
+                      <span className={s.avt}>LS</span>
+                      <div>
+                        <b>Lumen Studio</b>
+                        <small>Invoice INV-1042</small>
+                      </div>
+                      <span className={cx(s.pill, s.pillPaid)}>Paid</span>
+                    </div>
+                    <div className={s.ok}>
+                      <Icon name="check" className={s.icon} />
+                    </div>
+                    <div className={s.rcT}>Payment received</div>
+                    <div className={s.rcTy}>£1,000.00 paid to Lumen Studio. Thank you.</div>
+                    <dl className={cx(s.rcDl, s.num)}>
+                      <dt>You sent</dt>
+                      <dd>1,333.34 USDT</dd>
+                      <dt>Network</dt>
+                      <dd>Tron (TRC20)</dd>
+                      <dt>Paid on</dt>
+                      <dd>5 Nov 2026, 10:42</dd>
+                      <dt>Transaction</dt>
+                      <dd>
+                        <code>3672fd…3559bb</code>
+                      </dd>
+                    </dl>
+                  </div>
+                  <div className={cx(s.ui, s.mrow)} aria-hidden="true">
+                    <div>
+                      <b>INV-1042 · Northgate Labs</b>
+                      <small>1,333.34 USDT · verified with Roqqu</small>
+                    </div>
+                    <div className={s.mrowR}>
+                      <span className={cx(s.mrowAmt, s.num)}>£1,000.00</span>
+                      <span className={cx(s.pill, s.pillPaid)}>Paid</span>
+                    </div>
+                    <div className={s.mrowPb}>
+                      <i />
+                    </div>
+                  </div>
+                </div>
               </article>
             </div>
           </div>
