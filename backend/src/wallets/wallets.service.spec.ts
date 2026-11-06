@@ -134,4 +134,30 @@ describe('WalletsService', () => {
     expect(error).toBeInstanceOf(BadRequestException);
     expect(roqquMock.generateWallet).not.toHaveBeenCalled();
   });
+
+  // Demo mode never calls Roqqu, so a missing email must not block the
+  // simulated address (the payment page's simulate buttons depend on it).
+  it('makes a simulated address without any contact email in demo mode', async () => {
+    const demoRoqqu = {
+      simulatesPayments: true,
+      generateWallet: vi.fn().mockResolvedValue({
+        status: 'success',
+        message: 'simulated address (demo mode)',
+        data: { address: 'TSIMdemo' },
+      }),
+    };
+    const demo = new WalletsService(
+      prismaMock as unknown as PrismaService,
+      businessesMock as unknown as BusinessesService,
+      demoRoqqu as unknown as RoqquService,
+    );
+    prismaMock.invoice.findUnique.mockResolvedValue(
+      invoiceRow({ client: null, business: { businessName: 'No Mail Ltd', businessEmail: null } }),
+    );
+    const result = await demo.ensureAddress('inv-1');
+    expect(result).toEqual({ address: 'TSIMdemo', network: 'erc20', reused: false });
+    expect(prismaMock.wallet.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ address: 'TSIMdemo', customerEmail: null, provider: 'simulated' }),
+    });
+  });
 });

@@ -99,7 +99,7 @@ export class WalletsService {
         invoiceId: invoice.id,
         address,
         network: invoice.network,
-        customerEmail: customer.email,
+        customerEmail: customer.email || null,
         // Demo mode addresses are marked so they are never mistaken for
         // real Roqqu wallets.
         ...(this.roqqu.simulatesPayments ? { provider: 'simulated' } : {}),
@@ -128,6 +128,8 @@ export class WalletsService {
   // (the fallback when a buyer skips the form or an invoice has no client).
   // TakeFlow stores a single name, so it is split on the first word; a
   // single-word name reuses it as the last name.
+  // Demo mode simulates the address and never calls Roqqu, so missing contact
+  // details are allowed there (the email is then stored as null).
   private resolveCustomer(invoice: AddressableInvoice): {
     email: string;
     first_name: string;
@@ -136,10 +138,14 @@ export class WalletsService {
     const name =
       invoice.buyerName?.trim() || invoice.client?.name || invoice.business.businessName;
     const email = invoice.buyerEmail || invoice.client?.email || invoice.business.businessEmail;
-    if (!name?.trim() || !email) {
+    if ((!name?.trim() || !email) && !this.roqqu.simulatesPayments) {
       throw new BadRequestException(
         'A name and email are required to generate an address: give a buyer email, or add an email to the client or the business',
       );
+    }
+    if (!email) {
+      const demoName = name?.trim() || 'TakeFlow';
+      return { email: '', first_name: demoName.split(/\s+/)[0], last_name: demoName };
     }
     const parts = name.trim().split(/\s+/);
     const first_name = parts[0];
